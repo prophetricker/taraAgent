@@ -7,3 +7,5 @@ coverage/
 *.tsbuildinfo
 dist/
 rollback-snapshots/
+*.md
+!README.md
