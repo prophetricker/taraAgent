@@ -24,6 +24,10 @@ import {
   parseDandelionDecision,
   shouldAttemptDandelionExtraction
 } from "@/lib/dandelion-extractor";
+import {
+  buildDandelionSummaryPrompt,
+  parseDandelionSummary
+} from "@/lib/dandelion-summarizer";
 import { readServerEnv } from "@/lib/env";
 import { findDuplicateFragment } from "@/lib/fragments";
 import { getTextFromParts } from "@/lib/messages";
@@ -74,19 +78,6 @@ export async function POST(request: Request) {
       const userMessageCount = history.filter(
         (message) => message.role === "user"
       ).length;
-      const activeNode = (await listNodes(user.id)).find(
-        (node) => node.id === parsed.nodeId
-      );
-      const topic = deriveTopicFromConversation({
-        previousSummary: activeNode?.content ?? "",
-        latestMessage: content
-      });
-      await updateNode({
-        userId: user.id,
-        nodeId: parsed.nodeId,
-        title: topic.title,
-        content: topic.summary
-      });
       if (userMessageCount > 1 && userMessageCount % 2 === 0) {
         const recentUserMessages = history
           .filter((message) => message.role === "user")
@@ -124,6 +115,20 @@ export async function POST(request: Request) {
         const activeNode = (await listNodes(user.id)).find(
           (node) => node.id === parsed.nodeId
         );
+        const history = await listMessages({
+          userId: user.id,
+          conversationId: conversation.id
+        });
+
+        await updateDandelionCenter({
+          model: xlab.chatModel(env.xlab.model),
+          userId: user.id,
+          nodeId: parsed.nodeId,
+          previousTitle: activeNode?.title ?? "",
+          previousSummary: activeNode?.content ?? "",
+          latestUserMessage: content,
+          messages: history
+        });
 
         await maybeCreateDandelionFragment({
           model: xlab.chatModel(env.xlab.model),
@@ -146,6 +151,55 @@ export async function POST(request: Request) {
       return "Agent stream failed.";
     }
   });
+}
+
+async function updateDandelionCenter(input: {
+  model: ReturnType<ReturnType<typeof createOpenAICompatible>["chatModel"]>;
+  userId: string;
+  nodeId: string;
+  previousTitle: string;
+  previousSummary: string;
+  latestUserMessage: string;
+  messages: Array<{
+    role: "user" | "assistant" | "system" | "tool";
+    content: string;
+  }>;
+}) {
+  const fallbackTopic = deriveTopicFromConversation({
+    previousSummary: input.previousSummary,
+    latestMessage: input.latestUserMessage
+  });
+
+  try {
+    const result = await generateText({
+      model: input.model,
+      system:
+        "你是一个灵感主干归纳器。你只输出 JSON。你要抓住整段对话的主干，而不是复述最新一句。",
+      prompt: buildDandelionSummaryPrompt({
+        previousTitle: input.previousTitle,
+        previousSummary: input.previousSummary,
+        messages: input.messages
+      }),
+      temperature: 0.1
+    });
+    const summary = parseDandelionSummary(result.text, {
+      latestUserMessage: input.latestUserMessage
+    });
+
+    await updateNode({
+      userId: input.userId,
+      nodeId: input.nodeId,
+      title: summary?.title ?? fallbackTopic.title,
+      content: summary?.summary ?? fallbackTopic.summary
+    });
+  } catch {
+    await updateNode({
+      userId: input.userId,
+      nodeId: input.nodeId,
+      title: fallbackTopic.title,
+      content: fallbackTopic.summary
+    });
+  }
 }
 
 async function maybeCreateDandelionFragment(input: {

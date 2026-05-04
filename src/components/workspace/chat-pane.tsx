@@ -166,7 +166,7 @@ export function ChatPane({
               <input
                 value={selectionNote}
                 onChange={(event) => setSelectionNote(event.target.value)}
-                placeholder="给这枚蒲公英一个短标题..."
+                placeholder="给这枚碎片一个短标题..."
                 className="min-w-0 flex-1 rounded-2xl border border-stone-900/10 bg-white/75 px-3 py-2 text-sm outline-none focus:border-[#667a4d]"
               />
               <button
@@ -240,7 +240,7 @@ function EmptyState() {
         先不用整理。
       </h2>
       <p className="mt-3 leading-7 text-stone-700">
-        把脑子里松散、矛盾、还不能定义的东西倒出来。右侧会保存主节点和飞出的蒲公英碎片。
+        把脑子里松散、矛盾、还不能定义的东西倒出来。右侧会沉淀当前蒲公英、延伸和游离碎片。
       </p>
     </div>
   );

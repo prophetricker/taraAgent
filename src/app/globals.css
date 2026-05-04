@@ -8,6 +8,11 @@
   --cream: #f6f0df;
   --seed: #f4c96b;
   --ink: #261f18;
+  --canvas-bg: #e9e2ce;
+  --node-bg: #fff8e8;
+  --node-border: rgba(102, 122, 77, 0.35);
+  --edge: rgba(102, 122, 77, 0.75);
+  --tag-highlight: rgba(244, 201, 107, 0.38);
 }
 
 * {
@@ -43,7 +48,7 @@ textarea {
 }
 
 .react-flow__edge-path {
-  stroke: rgba(102, 122, 77, 0.75);
+  stroke: var(--edge);
   stroke-width: 2;
 }
 
@@ -51,4 +56,30 @@ textarea {
   border-radius: 14px;
   overflow: hidden;
   box-shadow: 0 14px 35px rgba(44, 36, 27, 0.18);
+}
+
+[data-highlighted-tag] .dandelion-node {
+  filter: saturate(0.86);
+  transition:
+    box-shadow 160ms ease,
+    filter 160ms ease,
+    border-color 160ms ease;
+}
+
+[data-highlighted-tag="文案"] .dandelion-node[data-tags~="文案"],
+[data-highlighted-tag="自动捕捉"] .dandelion-node[data-tags~="自动捕捉"],
+[data-highlighted-tag="画布"] .dandelion-node[data-tags~="画布"],
+[data-highlighted-tag="布局"] .dandelion-node[data-tags~="布局"],
+[data-highlighted-tag="关系线"] .dandelion-node[data-tags~="关系线"],
+[data-highlighted-tag="碎片"] .dandelion-node[data-tags~="碎片"],
+[data-highlighted-tag="延伸"] .dandelion-node[data-tags~="延伸"],
+[data-highlighted-tag="相关度"] .dandelion-node[data-tags~="相关度"],
+[data-highlighted-tag="聚类"] .dandelion-node[data-tags~="聚类"],
+[data-highlighted-tag="视角"] .dandelion-node[data-tags~="视角"],
+[data-highlighted-tag="交互"] .dandelion-node[data-tags~="交互"] {
+  border-color: rgba(244, 201, 107, 0.72);
+  box-shadow:
+    0 0 0 4px var(--tag-highlight),
+    0 18px 50px rgba(44, 36, 27, 0.14);
+  filter: saturate(1.05);
 }

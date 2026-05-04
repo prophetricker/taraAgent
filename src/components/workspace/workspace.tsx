@@ -5,7 +5,6 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ChatPane } from "@/components/workspace/chat-pane";
-import { FragmentShelf } from "@/components/workspace/fragment-shelf";
 import { InspirationCanvas } from "@/components/workspace/inspiration-canvas";
 import type { DandelionFragmentRecord, MessageRecord } from "@/db/queries";
 import { formatFragmentCopy } from "@/lib/fragments";
@@ -158,7 +157,6 @@ export function Workspace({
           onNodePositionChange={saveNodePosition}
         />
         <FragmentNotice fragment={fragmentNotice} />
-        <FragmentShelf fragments={fragments} />
       </section>
     </main>
   );
@@ -181,7 +179,7 @@ function FragmentNotice({
           exit={{ opacity: 0, y: -10 }}
           className="pointer-events-none absolute left-1/2 top-5 z-30 -translate-x-1/2 rounded-full border border-[#667a4d]/20 bg-[#fff8e8]/70 px-4 py-2 text-xs text-[#667a4d] shadow-lg shadow-stone-900/10 backdrop-blur"
         >
-          捕捉到一枚新的蒲公英：{copy.title}
+          捕捉到一枚新的碎片：{copy.title}
         </motion.div>
       ) : null}
     </AnimatePresence>
