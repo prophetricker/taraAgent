@@ -50,10 +50,10 @@ export async function POST(request: Request) {
 
   const parsed = chatRequestSchema.parse(await request.json());
   const env = readServerEnv();
-  const xlab = createOpenAICompatible({
-    name: "xlab",
-    apiKey: env.xlab.apiKey,
-    baseURL: env.xlab.baseUrl
+  const aiProvider = createOpenAICompatible({
+    name: "ai-provider",
+    apiKey: env.ai.apiKey,
+    baseURL: env.ai.baseUrl
   });
   const conversation = parsed.conversationId
     ? { id: parsed.conversationId }
@@ -98,7 +98,7 @@ export async function POST(request: Request) {
   }
 
   const result = streamText({
-    model: xlab.chatModel(env.xlab.model),
+    model: aiProvider.chatModel(env.ai.model),
     system: buildGuardianSystemPrompt(parsed.mode as GuardianMode),
     messages: await convertToModelMessages(parsed.messages),
     onFinish: async ({ text }) => {
@@ -121,7 +121,7 @@ export async function POST(request: Request) {
         });
 
         await updateDandelionCenter({
-          model: xlab.chatModel(env.xlab.model),
+          model: aiProvider.chatModel(env.ai.model),
           userId: user.id,
           nodeId: parsed.nodeId,
           previousTitle: activeNode?.title ?? "",
@@ -131,7 +131,7 @@ export async function POST(request: Request) {
         });
 
         await maybeCreateDandelionFragment({
-          model: xlab.chatModel(env.xlab.model),
+          model: aiProvider.chatModel(env.ai.model),
           userId: user.id,
           nodeId: parsed.nodeId,
           conversationId: conversation.id,

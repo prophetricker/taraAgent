@@ -4,8 +4,9 @@ const REQUIRED_KEYS = [
   "NEXT_PUBLIC_SUPABASE_URL",
   "NEXT_PUBLIC_SUPABASE_ANON_KEY",
   "DATABASE_URL",
-  "XLAB_API_KEY",
-  "XLAB_CHAT_MODEL"
+  "AI_API_KEY",
+  "AI_BASE_URL",
+  "AI_CHAT_MODEL"
 ] as const;
 
 export type ServerEnv = {
@@ -14,7 +15,7 @@ export type ServerEnv = {
     anonKey: string;
   };
   databaseUrl: string;
-  xlab: {
+  ai: {
     apiKey: string;
     baseUrl: string;
     model: string;
@@ -36,10 +37,10 @@ export function readServerEnv(env: EnvRecord = process.env): ServerEnv {
       anonKey: env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
     },
     databaseUrl: env.DATABASE_URL!,
-    xlab: {
-      apiKey: env.XLAB_API_KEY!,
-      baseUrl: env.XLAB_BASE_URL || "https://xlabapi.com/v1",
-      model: env.XLAB_CHAT_MODEL!
+    ai: {
+      apiKey: env.AI_API_KEY!,
+      baseUrl: env.AI_BASE_URL!,
+      model: env.AI_CHAT_MODEL!
     }
   };
 }
