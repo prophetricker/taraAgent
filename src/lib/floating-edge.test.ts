@@ -29,6 +29,44 @@ describe("getFloatingConnection", () => {
     expect(connection.target.y).toBeCloseTo(360);
   });
 
+  it("can choose side entry points that avoid unnecessary detours", () => {
+    const geometry = getFloatingEdgeGeometry(
+      { x: 0, y: 360, width: 140, height: 112 },
+      { x: 300, y: 160, width: 160, height: 112 },
+      {
+        obstacles: [{ x: 160, y: 230, width: 116, height: 124 }]
+      }
+    );
+    const points = getPathPoints(geometry.path);
+    const start = points[0];
+    const end = points.at(-1)!;
+    const ySpread = Math.max(...points.map((point) => point.y)) -
+      Math.min(...points.map((point) => point.y));
+
+    expect(start.x).toBeCloseTo(140);
+    expect(end.x).toBeGreaterThan(280);
+    expect(ySpread).toBeLessThan(280);
+  });
+
+  it("changes boundary points before adding a large obstacle detour", () => {
+    const geometry = getFloatingEdgeGeometry(
+      { x: 0, y: 200, width: 100, height: 100 },
+      { x: 400, y: 200, width: 100, height: 100 },
+      {
+        obstaclePadding: 8,
+        obstacles: [{ x: 210, y: 235, width: 80, height: 30 }]
+      }
+    );
+    const points = getPathPoints(geometry.path);
+    const start = points[0];
+    const end = points.at(-1)!;
+
+    expect(start.x).toBeCloseTo(100);
+    expect(end.x).toBeCloseTo(400);
+    expect(start.y).toBeLessThan(235);
+    expect(end.y).toBeLessThan(235);
+  });
+
   it("routes blocked links around the obstructing node", () => {
     const geometry = getFloatingEdgeGeometry(
       { x: 0, y: 0, width: 100, height: 100 },

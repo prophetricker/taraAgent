@@ -508,8 +508,61 @@ describe("buildRightBrainGraph", () => {
       graph.edges.some(
         (edge) =>
           edge.id === "inferred-duplicate-a-duplicate-b" &&
-          edge.data?.inferred === true
+          edge.data?.inferred === true &&
+          edge.data?.relationKind === "derivation"
       )
+    ).toBe(true);
+  });
+
+  it("keeps identical extension copy on a stable strong relation despite tag noise", () => {
+    const graph = buildRightBrainGraph({
+      graph: {
+        nodes: [
+          createFlowNode({
+            id: "root",
+            kind: "dandelion",
+            tags: ["root"],
+            createdAt: "2026-04-27T00:00:00.000Z"
+          }),
+          createFlowNode({
+            id: "copy-a",
+            parentId: "root",
+            tags: ["layout", "routing"],
+            title: "line endpoint quality",
+            summary: "choose endpoints that avoid unnecessary detours",
+            createdAt: "2026-04-27T00:00:01.000Z"
+          }),
+          createFlowNode({
+            id: "copy-b",
+            parentId: "root",
+            tags: ["summary"],
+            title: "line endpoint quality",
+            summary: "choose endpoints that avoid unnecessary detours",
+            createdAt: "2026-04-27T00:00:02.000Z"
+          }),
+          createFlowNode({
+            id: "copy-c",
+            parentId: "root",
+            tags: [],
+            title: "line endpoint quality",
+            summary: "choose endpoints that avoid unnecessary detours",
+            createdAt: "2026-04-27T00:00:03.000Z"
+          })
+        ],
+        edges: [
+          createFlowEdge("root", "copy-a"),
+          createFlowEdge("root", "copy-b"),
+          createFlowEdge("root", "copy-c")
+        ]
+      },
+      activeNodeId: "root",
+      fragments: []
+    });
+    const inferredEdges = graph.edges.filter((edge) => edge.data?.inferred);
+
+    expect(inferredEdges).toHaveLength(2);
+    expect(
+      inferredEdges.every((edge) => edge.data?.relationKind === "derivation")
     ).toBe(true);
   });
 

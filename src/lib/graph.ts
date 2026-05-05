@@ -481,13 +481,30 @@ function getNodeSimilarity(
   a: Pick<InspirationFlowNodeData, "tags" | "displayTitle" | "summary">,
   b: Pick<InspirationFlowNodeData, "tags" | "displayTitle" | "summary">
 ) {
+  const leftCopy = getNormalizedIdeaCopy(a);
+  const rightCopy = getNormalizedIdeaCopy(b);
+
+  if (leftCopy && leftCopy === rightCopy) {
+    return 1;
+  }
+
   const tagSimilarity = getTagSimilarity(a.tags, b.tags);
   const textSimilarity = getTextSimilarity(
     `${a.displayTitle} ${a.summary}`,
     `${b.displayTitle} ${b.summary}`
   );
 
-  return tagSimilarity * 0.55 + textSimilarity * 0.45;
+  const blendedSimilarity = tagSimilarity * 0.55 + textSimilarity * 0.45;
+
+  if (textSimilarity >= 0.92) {
+    return Math.max(blendedSimilarity, 0.86);
+  }
+
+  if (textSimilarity >= 0.82) {
+    return Math.max(blendedSimilarity, 0.72);
+  }
+
+  return blendedSimilarity;
 }
 
 function getTextSimilarity(a: string, b: string) {
@@ -512,6 +529,15 @@ function getTextFingerprint(value: string) {
     .replace(/[^\p{Letter}\p{Number}\u4e00-\u9fff]+/gu, "")
     .toLowerCase()
     .split("");
+}
+
+function getNormalizedIdeaCopy(
+  data: Pick<InspirationFlowNodeData, "displayTitle" | "summary">
+) {
+  return `${data.displayTitle} ${data.summary}`
+    .normalize("NFKC")
+    .replace(/\s+/g, "")
+    .toLowerCase();
 }
 
 function layoutVisibleFragments(input: {

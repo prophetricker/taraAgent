@@ -53,62 +53,19 @@ export function getFloatingEdgeGeometry(
   target: FloatingNodeRect,
   options: FloatingEdgeOptions = {}
 ): FloatingEdgeGeometry {
-  const sourceCenter = getRectCenter(source);
-  const targetCenter = getRectCenter(target);
-  const connection = getFloatingConnection(source, target);
-  const direction = normalizePoint({
-    x: connection.target.x - connection.source.x,
-    y: connection.target.y - connection.source.y
-  });
-  const distance = getPointDistance(connection.source, connection.target);
   const obstacles = (options.obstacles ?? []).map((obstacle) =>
     expandRect(obstacle, options.obstaclePadding ?? 30)
   );
-  const directRoute = buildRoute({
-    start: connection.source,
-    end: connection.target,
-    direction,
-    distance,
-    offset: 0
-  });
+  const naturalConnection = getFloatingConnection(source, target);
+  const naturalRoute = buildDirectRoute(naturalConnection);
 
-  if (!routeHitsObstacles(directRoute, obstacles)) {
-    return toGeometry(directRoute);
+  if (obstacles.length === 0 || !routeHitsObstacles(naturalRoute, obstacles)) {
+    return toGeometry(naturalRoute);
   }
 
-  const perpendicular = { x: -direction.y, y: direction.x };
-  const candidates = [
-    96,
-    -96,
-    144,
-    -144,
-    206,
-    -206,
-    276,
-    -276
-  ].map((offset) =>
-    buildRoute({
-      start: connection.source,
-      end: connection.target,
-      direction,
-      distance,
-      offset,
-      perpendicular
-    })
-  );
-  const routed =
-    candidates
-      .map((route) => ({
-        route,
-        score:
-          (routeHitsObstacles(route, obstacles) ? 100000 : 0) +
-          getAverageDistanceFromSegment(route.samples, sourceCenter, targetCenter) *
-            1.8 +
-          getPointDistance(route.firstEnd, route.secondEnd) * 0.12
-      }))
-      .sort((a, b) => a.score - b.score)[0]?.route ?? directRoute;
+  const routed = chooseBestRoute(source, target, obstacles);
 
-  return toGeometry({ ...routed, route: "obstacle" });
+  return toGeometry(routed);
 }
 
 function buildRoute(input: {
@@ -215,6 +172,156 @@ function buildRoute(input: {
     samples,
     route: input.offset === 0 ? "direct" : "obstacle"
   };
+}
+
+function chooseBestRoute(
+  source: FloatingNodeRect,
+  target: FloatingNodeRect,
+  obstacles: FloatingNodeRect[]
+) {
+  const naturalConnection = getFloatingConnection(source, target);
+  const connectionCandidates = getFloatingConnectionCandidates(source, target);
+  let bestRoute: ThreePartRoute | null = null;
+  let bestScore = Number.POSITIVE_INFINITY;
+
+  for (const connection of connectionCandidates) {
+    const direction = normalizePoint({
+      x: connection.target.x - connection.source.x,
+      y: connection.target.y - connection.source.y
+    });
+    const distance = getPointDistance(connection.source, connection.target);
+    const directRoute = buildRoute({
+      start: connection.source,
+      end: connection.target,
+      direction,
+      distance,
+      offset: 0
+    });
+    const routeCandidates = routeHitsObstacles(directRoute, obstacles)
+      ? [
+          directRoute,
+          ...createOffsetRoutes({
+            start: connection.source,
+            end: connection.target,
+            direction,
+            distance
+          })
+        ]
+      : [directRoute];
+
+    for (const route of routeCandidates) {
+      const routeScore =
+        getRouteScore(route, obstacles) +
+        getConnectionPenalty(connection, naturalConnection) * 0.22 +
+        distance * 0.14;
+
+      if (routeScore < bestScore) {
+        bestScore = routeScore;
+        bestRoute = route;
+      }
+    }
+  }
+
+  return bestRoute ?? buildRoute({
+    start: naturalConnection.source,
+    end: naturalConnection.target,
+    direction: normalizePoint({
+      x: naturalConnection.target.x - naturalConnection.source.x,
+      y: naturalConnection.target.y - naturalConnection.source.y
+    }),
+    distance: getPointDistance(naturalConnection.source, naturalConnection.target),
+    offset: 0
+  });
+}
+
+function getFloatingConnectionCandidates(
+  source: FloatingNodeRect,
+  target: FloatingNodeRect
+) {
+  const sourceCandidates = getBoundaryCandidates(source, target);
+  const targetCandidates = getBoundaryCandidates(target, source);
+  const naturalConnection = getFloatingConnection(source, target);
+  const candidates: Array<{
+    source: FloatingPoint;
+    target: FloatingPoint;
+  }> = [];
+
+  for (const sourceCandidate of sourceCandidates) {
+    for (const targetCandidate of targetCandidates) {
+      candidates.push({
+        source: sourceCandidate,
+        target: targetCandidate
+      });
+    }
+  }
+
+  candidates.push(naturalConnection);
+
+  return dedupeConnections(candidates);
+}
+
+function getBoundaryCandidates(
+  rect: FloatingNodeRect,
+  toward: FloatingNodeRect
+) {
+  const naturalPoint = getBoundaryPoint(rect, getRectCenter(toward));
+
+  return dedupePoints([naturalPoint, ...getPerimeterSamplePoints(rect)]);
+}
+
+function buildDirectRoute(input: { source: FloatingPoint; target: FloatingPoint }) {
+  const direction = normalizePoint({
+    x: input.target.x - input.source.x,
+    y: input.target.y - input.source.y
+  });
+  const distance = getPointDistance(input.source, input.target);
+
+  return buildRoute({
+    start: input.source,
+    end: input.target,
+    direction,
+    distance,
+    offset: 0
+  });
+}
+
+function createOffsetRoutes(input: {
+  start: FloatingPoint;
+  end: FloatingPoint;
+  direction: FloatingPoint;
+  distance: number;
+}) {
+  const perpendicular = { x: -input.direction.y, y: input.direction.x };
+
+  return [96, -96, 144, -144, 206, -206, 276, -276].map((offset) =>
+    buildRoute({
+      start: input.start,
+      end: input.end,
+      direction: input.direction,
+      distance: input.distance,
+      offset,
+      perpendicular
+    })
+  );
+}
+
+function getRouteScore(route: ThreePartRoute, obstacles: FloatingNodeRect[]) {
+  return (
+    (routeHitsObstacles(route, obstacles) ? 100000 : 0) +
+    (route.route === "obstacle" ? 600 : 0) +
+    getPolylineLength(route.samples) * 0.6 +
+    getPointDistance(route.firstEnd, route.secondEnd) * 0.08
+  );
+}
+
+function getConnectionPenalty(
+  connection: { source: FloatingPoint; target: FloatingPoint },
+  naturalConnection: { source: FloatingPoint; target: FloatingPoint }
+) {
+  return (
+    getPointDistance(connection.source, naturalConnection.source) +
+    getPointDistance(connection.target, naturalConnection.target)
+  );
 }
 
 function toGeometry(route: ThreePartRoute): FloatingEdgeGeometry {
@@ -341,44 +448,6 @@ function getRectCenter(rect: FloatingNodeRect) {
   };
 }
 
-function getAverageDistanceFromSegment(
-  points: FloatingPoint[],
-  start: FloatingPoint,
-  end: FloatingPoint
-) {
-  return (
-    points.reduce(
-      (total, point) => total + distancePointToSegment(point, start, end),
-      0
-    ) / Math.max(points.length, 1)
-  );
-}
-
-function distancePointToSegment(
-  point: FloatingPoint,
-  start: FloatingPoint,
-  end: FloatingPoint
-) {
-  const dx = end.x - start.x;
-  const dy = end.y - start.y;
-  const lengthSquared = dx * dx + dy * dy;
-
-  if (lengthSquared === 0) {
-    return getPointDistance(point, start);
-  }
-
-  const t = clamp(
-    ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared,
-    0,
-    1
-  );
-
-  return getPointDistance(point, {
-    x: start.x + t * dx,
-    y: start.y + t * dy
-  });
-}
-
 function getCubicPoint(
   start: FloatingPoint,
   control1: FloatingPoint,
@@ -437,6 +506,64 @@ function normalizePoint(point: FloatingPoint) {
 
 function getPointDistance(a: FloatingPoint, b: FloatingPoint) {
   return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function getPolylineLength(points: FloatingPoint[]) {
+  let total = 0;
+
+  for (let index = 1; index < points.length; index += 1) {
+    total += getPointDistance(points[index - 1]!, points[index]!);
+  }
+
+  return total;
+}
+
+function getPerimeterSamplePoints(rect: FloatingNodeRect) {
+  const offsets = [0.2, 0.35, 0.5, 0.65, 0.8];
+  const points: FloatingPoint[] = [];
+
+  for (const offset of offsets) {
+    points.push(
+      { x: rect.x + rect.width * offset, y: rect.y },
+      { x: rect.x + rect.width * offset, y: rect.y + rect.height },
+      { x: rect.x, y: rect.y + rect.height * offset },
+      { x: rect.x + rect.width, y: rect.y + rect.height * offset }
+    );
+  }
+
+  return points;
+}
+
+function dedupeConnections(
+  connections: Array<{ source: FloatingPoint; target: FloatingPoint }>
+) {
+  const seen = new Set<string>();
+
+  return connections.filter((connection) => {
+    const key = `${formatNumber(connection.source.x)},${formatNumber(connection.source.y)}|${formatNumber(connection.target.x)},${formatNumber(connection.target.y)}`;
+
+    if (seen.has(key)) {
+      return false;
+    }
+
+    seen.add(key);
+    return true;
+  });
+}
+
+function dedupePoints(points: FloatingPoint[]) {
+  const seen = new Set<string>();
+
+  return points.filter((point) => {
+    const key = `${formatNumber(point.x)},${formatNumber(point.y)}`;
+
+    if (seen.has(key)) {
+      return false;
+    }
+
+    seen.add(key);
+    return true;
+  });
 }
 
 function formatNumber(value: number) {
