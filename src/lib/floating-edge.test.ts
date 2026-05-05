@@ -40,7 +40,7 @@ describe("getFloatingConnection", () => {
 
     expect(geometry.path.startsWith("M ")).toBe(true);
     expect(geometry.route).toBe("obstacle");
-    expect(getPathCommandSequence(geometry.path)).toEqual(["M", "L", "C", "L"]);
+    expect(getPathCommandSequence(geometry.path)).toEqual(["M", "C", "C", "C"]);
     expect(geometry.path).toContain(" C ");
     expect(geometry.labelX).toBeGreaterThan(80);
     expectPathToAvoidRect(geometry.path, {
@@ -49,6 +49,22 @@ describe("getFloatingConnection", () => {
       width: 90,
       height: 96
     });
+  });
+
+  it("keeps blocked links smooth instead of sharp zigzags", () => {
+    const geometry = getFloatingEdgeGeometry(
+      { x: 0, y: 0, width: 100, height: 100 },
+      { x: 420, y: 40, width: 120, height: 92 },
+      {
+        obstacles: [{ x: 170, y: -20, width: 120, height: 160 }]
+      }
+    );
+
+    expect(geometry.route).toBe("obstacle");
+    expect(getPathCommandSequence(geometry.path)).toEqual(["M", "C", "C", "C"]);
+    expect(
+      Math.abs(geometry.controlPoint1.y - geometry.controlPoint2.y)
+    ).toBeGreaterThan(12);
   });
 
   it("starts and ends from the natural centerline boundary points", () => {
@@ -60,21 +76,21 @@ describe("getFloatingConnection", () => {
 
     expect(points[0].x).toBeCloseTo(100);
     expect(points[0].y).toBeCloseTo(57.86, 1);
-    expect(points[5].x).toBeCloseTo(260);
-    expect(points[5].y).toBeCloseTo(115, 1);
+    expect(points.at(-1)?.x).toBeCloseTo(260);
+    expect(points.at(-1)?.y).toBeCloseTo(115, 1);
   });
 
-  it("uses a fixed straight-curve-straight rhythm for close diagonal links", () => {
+  it("uses a continuous hand-drawn rhythm for close diagonal links", () => {
     const geometry = getFloatingEdgeGeometry(
       { x: 0, y: 0, width: 100, height: 80 },
       { x: 180, y: 76, width: 120, height: 88 }
     );
     const points = getPathPoints(geometry.path);
     const start = points[0];
-    const end = points[5];
+    const end = points.at(-1)!;
 
     expect(geometry.route).toBe("direct");
-    expect(getPathCommandSequence(geometry.path)).toEqual(["M", "L", "C", "L"]);
+    expect(getPathCommandSequence(geometry.path)).toEqual(["M", "C", "C", "C"]);
     expect(Math.abs(geometry.controlPoint1.y - geometry.controlPoint2.y)).toBeLessThan(70);
     expect(start.x).toBeCloseTo(100);
     expect(end.x).toBeCloseTo(180);
@@ -94,9 +110,9 @@ describe("getFloatingConnection", () => {
     );
 
     expect(direct.route).toBe("direct");
-    expect(getPathCommandSequence(direct.path)).toEqual(["M", "L", "C", "L"]);
+    expect(getPathCommandSequence(direct.path)).toEqual(["M", "C", "C", "C"]);
     expect(routed.route).toBe("obstacle");
-    expect(getPathCommandSequence(routed.path)).toEqual(["M", "L", "C", "L"]);
+    expect(getPathCommandSequence(routed.path)).toEqual(["M", "C", "C", "C"]);
     expect(routed.path).not.toBe(direct.path);
   });
 
@@ -111,7 +127,7 @@ describe("getFloatingConnection", () => {
       Math.min(...points.map((point) => point.x));
 
     expect(geometry.route).toBe("direct");
-    expect(getPathCommandSequence(geometry.path)).toEqual(["M", "L", "C", "L"]);
+    expect(getPathCommandSequence(geometry.path)).toEqual(["M", "C", "C", "C"]);
     expect(xSpread).toBeLessThan(4);
   });
 });
@@ -167,28 +183,46 @@ function expectPathToAvoidRect(
 }
 
 function samplePath(path: string) {
-  const points = getPathPoints(path);
-  const [start, lineEnd, control1, control2, curveEnd, end] = points;
+  const tokens = path.match(/[MLC]|-?\d+(?:\.\d+)?/g) ?? [];
   const samples: Array<{ x: number; y: number }> = [];
+  let current: { x: number; y: number } | null = null;
 
-  for (let index = 0; index <= 12; index += 1) {
-    samples.push(lerpPoint(start, lineEnd, index / 12));
-    samples.push(getCubicPoint(lineEnd, control1, control2, curveEnd, index / 12));
-    samples.push(lerpPoint(curveEnd, end, index / 12));
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+
+    if (token === "M" || token === "L") {
+      current = {
+        x: Number(tokens[index + 1]),
+        y: Number(tokens[index + 2])
+      };
+      samples.push(current);
+      index += 2;
+    }
+
+    if (token === "C" && current) {
+      const control1 = {
+        x: Number(tokens[index + 1]),
+        y: Number(tokens[index + 2])
+      };
+      const control2 = {
+        x: Number(tokens[index + 3]),
+        y: Number(tokens[index + 4])
+      };
+      const end = {
+        x: Number(tokens[index + 5]),
+        y: Number(tokens[index + 6])
+      };
+
+      for (let step = 1; step <= 16; step += 1) {
+        samples.push(getCubicPoint(current, control1, control2, end, step / 16));
+      }
+
+      current = end;
+      index += 6;
+    }
   }
 
   return samples;
-}
-
-function lerpPoint(
-  start: { x: number; y: number },
-  end: { x: number; y: number },
-  t: number
-) {
-  return {
-    x: start.x + (end.x - start.x) * t,
-    y: start.y + (end.y - start.y) * t
-  };
 }
 
 function getCubicPoint(

@@ -26,8 +26,8 @@ export type FloatingEdgeOptions = {
 
 type ThreePartRoute = {
   path: string;
-  lineEnd: FloatingPoint;
-  curveEnd: FloatingPoint;
+  firstEnd: FloatingPoint;
+  secondEnd: FloatingPoint;
   controlPoint1: FloatingPoint;
   controlPoint2: FloatingPoint;
   label: FloatingPoint;
@@ -104,7 +104,7 @@ export function getFloatingEdgeGeometry(
           (routeHitsObstacles(route, obstacles) ? 100000 : 0) +
           getAverageDistanceFromSegment(route.samples, sourceCenter, targetCenter) *
             1.8 +
-          getPointDistance(route.lineEnd, route.curveEnd) * 0.12
+          getPointDistance(route.firstEnd, route.secondEnd) * 0.12
       }))
       .sort((a, b) => a.score - b.score)[0]?.route ?? directRoute;
 
@@ -119,57 +119,96 @@ function buildRoute(input: {
   offset: number;
   perpendicular?: FloatingPoint;
 }): ThreePartRoute {
-  const firstLength = clamp(input.distance * 0.18, 34, 92);
-  const finalLength = clamp(input.distance * 0.18, 34, 92);
-  const curveTension = clamp(input.distance * 0.22, 42, 128);
   const perpendicular = input.perpendicular ?? { x: -input.direction.y, y: input.direction.x };
-  const lineEnd = {
+  const firstLength = clamp(input.distance * 0.22, 46, 128);
+  const finalLength = clamp(input.distance * 0.22, 46, 128);
+  const firstOffset = input.offset === 0 ? 0 : input.offset * 0.55;
+  const secondOffset = input.offset;
+  const firstEnd = {
     x:
       input.start.x +
       input.direction.x * firstLength +
-      perpendicular.x * input.offset,
+      perpendicular.x * firstOffset,
     y:
       input.start.y +
       input.direction.y * firstLength +
-      perpendicular.y * input.offset
+      perpendicular.y * firstOffset
   };
-  const curveEnd = {
+  const secondEnd = {
     x:
       input.end.x -
       input.direction.x * finalLength +
-      perpendicular.x * input.offset,
+      perpendicular.x * secondOffset,
     y:
       input.end.y -
       input.direction.y * finalLength +
-      perpendicular.y * input.offset
+      perpendicular.y * secondOffset
+  };
+  const entryTangent = getLaneChangeTangent({
+    direction: input.direction,
+    perpendicular,
+    offset: input.offset,
+    distance: firstLength,
+    phase: "entry"
+  });
+  const cruiseTangent = input.direction;
+  const exitTangent = getLaneChangeTangent({
+    direction: input.direction,
+    perpendicular,
+    offset: input.offset,
+    distance: finalLength,
+    phase: "exit"
+  });
+  const firstTension = clamp(firstLength * 0.42, 24, 78);
+  const middleTension = clamp(input.distance * 0.22, 56, 156);
+  const finalTension = clamp(finalLength * 0.42, 24, 78);
+  const firstControl1 = {
+    x: input.start.x + input.direction.x * firstTension,
+    y: input.start.y + input.direction.y * firstTension
+  };
+  const firstControl2 = {
+    x: firstEnd.x - entryTangent.x * firstTension,
+    y: firstEnd.y - entryTangent.y * firstTension
   };
   const controlPoint1 = {
-    x: lineEnd.x + input.direction.x * curveTension,
-    y: lineEnd.y + input.direction.y * curveTension
+    x: firstEnd.x + entryTangent.x * middleTension,
+    y: firstEnd.y + entryTangent.y * middleTension
   };
   const controlPoint2 = {
-    x: curveEnd.x - input.direction.x * curveTension,
-    y: curveEnd.y - input.direction.y * curveTension
+    x: secondEnd.x - cruiseTangent.x * middleTension,
+    y: secondEnd.y - cruiseTangent.y * middleTension
   };
-  const label = getCubicPoint(lineEnd, controlPoint1, controlPoint2, curveEnd, 0.5);
+  const finalControl1 = {
+    x: secondEnd.x + cruiseTangent.x * finalTension,
+    y: secondEnd.y + cruiseTangent.y * finalTension
+  };
+  const finalControl2 = {
+    x: input.end.x - exitTangent.x * finalTension,
+    y: input.end.y - exitTangent.y * finalTension
+  };
+  const label = getCubicPoint(firstEnd, controlPoint1, controlPoint2, secondEnd, 0.5);
   const samples = sampleThreePartPath({
     start: input.start,
-    lineEnd,
+    firstControl1,
+    firstControl2,
+    firstEnd,
     controlPoint1,
     controlPoint2,
-    curveEnd,
+    secondEnd,
+    finalControl1,
+    finalControl2,
     end: input.end
   });
 
   return {
     path: [
       `M ${formatNumber(input.start.x)} ${formatNumber(input.start.y)}`,
-      `L ${formatNumber(lineEnd.x)} ${formatNumber(lineEnd.y)}`,
-      `C ${formatNumber(controlPoint1.x)} ${formatNumber(controlPoint1.y)} ${formatNumber(controlPoint2.x)} ${formatNumber(controlPoint2.y)} ${formatNumber(curveEnd.x)} ${formatNumber(curveEnd.y)}`,
-      `L ${formatNumber(input.end.x)} ${formatNumber(input.end.y)}`
+      `C ${formatNumber(firstControl1.x)} ${formatNumber(firstControl1.y)} ${formatNumber(firstControl2.x)} ${formatNumber(firstControl2.y)} ${formatNumber(firstEnd.x)} ${formatNumber(firstEnd.y)}`,
+      `C ${formatNumber(controlPoint1.x)} ${formatNumber(controlPoint1.y)} ${formatNumber(controlPoint2.x)} ${formatNumber(controlPoint2.y)} ${formatNumber(secondEnd.x)} ${formatNumber(secondEnd.y)}`,
+      `C ${formatNumber(finalControl1.x)} ${formatNumber(finalControl1.y)} ${formatNumber(finalControl2.x)} ${formatNumber(finalControl2.y)} ${formatNumber(input.end.x)} ${formatNumber(input.end.y)}`
     ].join(" "),
-    lineEnd,
-    curveEnd,
+    firstEnd,
+    secondEnd,
     controlPoint1,
     controlPoint2,
     label,
@@ -197,35 +236,80 @@ function routeHitsObstacles(route: ThreePartRoute, obstacles: FloatingNodeRect[]
 
 function sampleThreePartPath(input: {
   start: FloatingPoint;
-  lineEnd: FloatingPoint;
+  firstControl1: FloatingPoint;
+  firstControl2: FloatingPoint;
+  firstEnd: FloatingPoint;
   controlPoint1: FloatingPoint;
   controlPoint2: FloatingPoint;
-  curveEnd: FloatingPoint;
+  secondEnd: FloatingPoint;
+  finalControl1: FloatingPoint;
+  finalControl2: FloatingPoint;
   end: FloatingPoint;
 }) {
   const samples: FloatingPoint[] = [];
 
-  for (let index = 0; index <= 12; index += 1) {
-    samples.push(lerpPoint(input.start, input.lineEnd, index / 12));
-  }
-
-  for (let index = 1; index <= 24; index += 1) {
+  for (let index = 0; index <= 14; index += 1) {
     samples.push(
       getCubicPoint(
-        input.lineEnd,
-        input.controlPoint1,
-        input.controlPoint2,
-        input.curveEnd,
-        index / 24
+        input.start,
+        input.firstControl1,
+        input.firstControl2,
+        input.firstEnd,
+        index / 14
       )
     );
   }
 
-  for (let index = 1; index <= 12; index += 1) {
-    samples.push(lerpPoint(input.curveEnd, input.end, index / 12));
+  for (let index = 1; index <= 22; index += 1) {
+    samples.push(
+      getCubicPoint(
+        input.firstEnd,
+        input.controlPoint1,
+        input.controlPoint2,
+        input.secondEnd,
+        index / 22
+      )
+    );
+  }
+
+  for (let index = 1; index <= 14; index += 1) {
+    samples.push(
+      getCubicPoint(
+        input.secondEnd,
+        input.finalControl1,
+        input.finalControl2,
+        input.end,
+        index / 14
+      )
+    );
   }
 
   return samples;
+}
+
+function getLaneChangeTangent(input: {
+  direction: FloatingPoint;
+  perpendicular: FloatingPoint;
+  offset: number;
+  distance: number;
+  phase: "entry" | "exit";
+}) {
+  if (input.offset === 0) {
+    return input.direction;
+  }
+
+  const lateralStrength = clamp(
+    Math.abs(input.offset) / Math.max(input.distance, 1),
+    0.25,
+    0.95
+  );
+  const sign = Math.sign(input.offset);
+  const lateralDirection = input.phase === "entry" ? sign : -sign;
+
+  return normalizePoint({
+    x: input.direction.x + input.perpendicular.x * lateralDirection * lateralStrength,
+    y: input.direction.y + input.perpendicular.y * lateralDirection * lateralStrength
+  });
 }
 
 function getBoundaryPoint(rect: FloatingNodeRect, toward: FloatingPoint) {
@@ -293,13 +377,6 @@ function distancePointToSegment(
     x: start.x + t * dx,
     y: start.y + t * dy
   });
-}
-
-function lerpPoint(start: FloatingPoint, end: FloatingPoint, t: number) {
-  return {
-    x: start.x + (end.x - start.x) * t,
-    y: start.y + (end.y - start.y) * t
-  };
 }
 
 function getCubicPoint(
