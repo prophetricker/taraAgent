@@ -23,10 +23,32 @@ import dynamic from "next/dynamic";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { DandelionFragmentRecord } from "@/db/queries";
+import {
+  clearCanvasSelection,
+  getEffectiveHighlightedTag,
+  getRelationMenuPosition,
+  isTagLocked,
+  toggleLockedTag
+} from "@/lib/canvas-interactions";
+import type { DatabaseHealth } from "@/lib/database-health";
 import { getFloatingEdgeGeometry } from "@/lib/floating-edge";
 import { formatFragmentCopy } from "@/lib/fragments";
-import { buildRightBrainGraph } from "@/lib/graph";
-import type { InspirationFlowNodeData } from "@/lib/graph";
+import { buildRightBrainGraph, getRelationVisualStyle } from "@/lib/graph";
+import type {
+  IdeaRelationKind,
+  IdeaRelationRecord,
+  InspirationFlowNodeData
+} from "@/lib/graph";
+import {
+  getCanvasOnboardingCards,
+  shouldShowCanvasOnboarding
+} from "@/lib/onboarding";
+import {
+  getSaveStatusCopy,
+  getSaveStatusToneClass,
+  shouldShowSaveStatus,
+  type SaveStatus
+} from "@/lib/save-status";
 
 const ClientOnlyFlow = dynamic(
   () => Promise.resolve(FlowSurface),
@@ -41,19 +63,35 @@ const ClientOnlyFlow = dynamic(
 export function InspirationCanvas({
   activeNodeId,
   graph,
+  relations,
   fragments,
-  onNodePositionChange
+  databaseHealth,
+  notice,
+  saveStatus,
+  onNoticeDismiss,
+  onNodePositionChange,
+  onRelationChange
 }: {
   activeNodeId: string;
   graph: {
     nodes: Node<InspirationFlowNodeData>[];
     edges: Edge[];
   };
+  relations: IdeaRelationRecord[];
   fragments: DandelionFragmentRecord[];
+  databaseHealth: DatabaseHealth;
+  notice: string | null;
+  saveStatus: SaveStatus | null;
+  onNoticeDismiss: () => void;
   onNodePositionChange: (
     nodeId: string,
     position: { x: number; y: number }
   ) => Promise<void>;
+  onRelationChange: (input: {
+    sourceNodeId: string;
+    targetNodeId: string;
+    relationKind: IdeaRelationKind;
+  }) => Promise<boolean>;
 }) {
   const [visibleFragmentIds, setVisibleFragmentIds] = useState<
     string[] | undefined
@@ -65,18 +103,39 @@ export function InspirationCanvas({
         graph,
         activeNodeId,
         fragments,
+        relations,
         visibleFragmentIds
       }),
-    [activeNodeId, fragments, graph, visibleFragmentIds]
+    [activeNodeId, fragments, graph, relations, visibleFragmentIds]
   );
+  const showOnboarding = shouldShowCanvasOnboarding({
+    extensionCount: flowGraph.nodes.filter(
+      (node) => node.data.kind === "extension"
+    ).length,
+    fragmentCount: fragments.length
+  });
   const [nodes, setNodes, onNodesChange] = useNodesState(flowGraph.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(flowGraph.edges);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-  const [highlightedTag, setHighlightedTag] = useState<string | null>(null);
+  const [selectedRelation, setSelectedRelation] = useState<{
+    edgeId: string;
+    sourceNodeId: string;
+    targetNodeId: string;
+    relationKind: IdeaRelationKind;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [hoveredTag, setHoveredTag] = useState<string | null>(null);
+  const [lockedTag, setLockedTag] = useState<string | null>(null);
+  const highlightedTag = getEffectiveHighlightedTag({
+    hoveredTag,
+    lockedTag
+  });
   const flowInstanceRef = useRef<ReactFlowInstance<
     Node<InspirationFlowNodeData>,
     Edge
   > | null>(null);
+  const canvasRef = useRef<HTMLDivElement | null>(null);
   const nodeTypes = useMemo(
     () => ({
       topic: TopicNode,
@@ -98,7 +157,10 @@ export function InspirationCanvas({
         selected: node.id === selectedNodeId,
         data: {
           ...node.data,
-          onTagHover: setHighlightedTag
+          lockedTag,
+          onTagHover: setHoveredTag,
+          onTagClick: (tag: string) =>
+            setLockedTag((current) => toggleLockedTag(current, tag))
         },
         position:
           node.data.kind === "dandelion"
@@ -108,7 +170,7 @@ export function InspirationCanvas({
       }))
     );
     setEdges(flowGraph.edges);
-  }, [flowGraph, selectedNodeId, setEdges, setNodes]);
+  }, [flowGraph, lockedTag, selectedNodeId, setEdges, setNodes]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -125,8 +187,44 @@ export function InspirationCanvas({
     onNodesChange(changes);
   }
 
+  async function handleRelationKindChange(relationKind: IdeaRelationKind) {
+    if (!selectedRelation) {
+      return;
+    }
+
+    const relation = selectedRelation;
+    setSelectedRelation(null);
+    const previousEdges = edges;
+    const relationStyle = getRelationVisualStyle(relationKind);
+    setEdges((currentEdges) =>
+      currentEdges.map((edge) =>
+        edge.id === relation.edgeId
+          ? {
+              ...edge,
+              ...relationStyle,
+              data: {
+                ...edge.data,
+                relationKind,
+                userEdited: true
+              }
+            }
+          : edge
+      )
+    );
+    const saved = await onRelationChange({
+      sourceNodeId: relation.sourceNodeId,
+      targetNodeId: relation.targetNodeId,
+      relationKind
+    });
+
+    if (!saved) {
+      setEdges(previousEdges);
+    }
+  }
+
   return (
     <div
+      ref={canvasRef}
       className="h-full w-full"
       data-highlighted-tag={highlightedTag ?? undefined}
     >
@@ -138,6 +236,17 @@ export function InspirationCanvas({
           当前蒲公英图
         </h2>
       </div>
+      <CanvasNotice
+        notice={
+          notice ??
+          (!databaseHealth.ok
+            ? `数据库迁移未完成：请执行 ${databaseHealth.requiredMigrations.join(", ")}`
+            : null)
+        }
+        onDismiss={onNoticeDismiss}
+      />
+      <SaveStatusPill status={saveStatus} />
+      <CanvasOnboarding show={showOnboarding} />
       <FragmentPool
         fragments={fragments}
         visibleFragmentIds={visibleFragmentIds}
@@ -168,7 +277,43 @@ export function InspirationCanvas({
         onNodesChange={handleNodesChange}
         onEdgesChange={onEdgesChange}
         onNodeClick={(_, node) => setSelectedNodeId(node.id)}
-        onPaneClick={() => setSelectedNodeId(null)}
+        onEdgeClick={(event, edge) => {
+          event.stopPropagation();
+          const relationKind = edge.data?.relationKind;
+
+          if (!isEditableRelationKind(relationKind)) {
+            return;
+          }
+          const canvasRect = canvasRef.current?.getBoundingClientRect();
+
+          setSelectedRelation({
+            edgeId: edge.id,
+            sourceNodeId: edge.source,
+            targetNodeId: edge.target,
+            relationKind,
+            ...getRelationMenuPosition({
+              anchorX: event.clientX,
+              anchorY: event.clientY,
+              viewportWidth: canvasRect?.width ?? window.innerWidth,
+              viewportHeight: canvasRect?.height ?? window.innerHeight,
+              containerLeft: canvasRect?.left ?? 0,
+              containerTop: canvasRect?.top ?? 0
+            })
+          });
+        }}
+        onPaneClick={() => {
+          setSelectedNodeId(null);
+          setSelectedRelation(null);
+        }}
+        onPaneContextMenu={(event) => {
+          event.preventDefault();
+          const cleared = clearCanvasSelection();
+
+          setSelectedNodeId(cleared.selectedNodeId);
+          setSelectedRelation(cleared.selectedRelation);
+          setHoveredTag(cleared.hoveredTag);
+          setLockedTag(cleared.lockedTag);
+        }}
         onInit={(instance) => {
           flowInstanceRef.current = instance;
         }}
@@ -180,6 +325,79 @@ export function InspirationCanvas({
           void onNodePositionChange(node.id, node.position);
         }}
       />
+      <RelationEditor
+        relation={selectedRelation}
+        onChange={handleRelationKindChange}
+        onClose={() => setSelectedRelation(null)}
+      />
+    </div>
+  );
+}
+
+function CanvasOnboarding({ show }: { show: boolean }) {
+  const cards = getCanvasOnboardingCards();
+
+  if (!show) {
+    return null;
+  }
+
+  return (
+    <div className="pointer-events-none absolute bottom-6 left-6 z-10 max-w-[34rem] rounded-[1.6rem] border border-stone-900/10 bg-[#fff8e8]/78 p-4 shadow-xl shadow-stone-900/10 backdrop-blur">
+      <p className="text-[10px] font-semibold tracking-[0.24em] text-[#667a4d]">
+        HOW TO READ
+      </p>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        {cards.map((card) => (
+          <div
+            key={card.title}
+            className="rounded-[1.15rem] border border-[#667a4d]/12 bg-white/45 p-3"
+          >
+            <h3 className="text-sm font-semibold text-[#2c241b]">
+              {card.title}
+            </h3>
+            <p className="mt-1 text-xs leading-5 text-stone-600">{card.body}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SaveStatusPill({ status }: { status: SaveStatus | null }) {
+  if (!shouldShowSaveStatus(status)) {
+    return null;
+  }
+
+  return (
+    <div
+      className={`pointer-events-none absolute left-1/2 top-[4.2rem] z-40 -translate-x-1/2 rounded-full border px-4 py-2 text-xs shadow-lg shadow-stone-900/10 backdrop-blur transition ${getSaveStatusToneClass(status)}`}
+    >
+      {getSaveStatusCopy(status)}
+    </div>
+  );
+}
+
+function CanvasNotice({
+  notice,
+  onDismiss
+}: {
+  notice: string | null;
+  onDismiss: () => void;
+}) {
+  if (!notice) {
+    return null;
+  }
+
+  return (
+    <div className="absolute left-1/2 top-5 z-40 flex max-w-[min(38rem,72%)] -translate-x-1/2 items-center gap-3 rounded-full border border-amber-700/20 bg-[#fff8e8]/88 px-4 py-2 text-xs text-amber-900 shadow-lg shadow-stone-900/10 backdrop-blur">
+      <span className="truncate">{notice}</span>
+      <button
+        type="button"
+        onClick={onDismiss}
+        className="shrink-0 rounded-full px-2 py-1 text-amber-900/70 hover:bg-amber-900/10"
+      >
+        关闭
+      </button>
     </div>
   );
 }
@@ -192,7 +410,9 @@ function FlowSurface({
   onNodesChange,
   onEdgesChange,
   onNodeClick,
+  onEdgeClick,
   onPaneClick,
+  onPaneContextMenu,
   onInit,
   onNodeDragStop
 }: {
@@ -211,7 +431,11 @@ function FlowSurface({
     event: React.MouseEvent,
     node: Node<InspirationFlowNodeData>
   ) => void;
+  onEdgeClick: (event: React.MouseEvent, edge: Edge) => void;
   onPaneClick: () => void;
+  onPaneContextMenu: (
+    event: MouseEvent | React.MouseEvent<Element, MouseEvent>
+  ) => void;
   onInit: (instance: ReactFlowInstance<Node<InspirationFlowNodeData>, Edge>) => void;
   onNodeDragStop: (
     event: React.MouseEvent,
@@ -227,7 +451,9 @@ function FlowSurface({
       onNodesChange={onNodesChange}
       onEdgesChange={onEdgesChange}
       onNodeClick={onNodeClick}
+      onEdgeClick={onEdgeClick}
       onPaneClick={onPaneClick}
+      onPaneContextMenu={onPaneContextMenu}
       onInit={onInit}
       onNodeDragStop={onNodeDragStop}
       fitView
@@ -239,6 +465,98 @@ function FlowSurface({
       <Background color="#9aaa83" gap={28} size={1} />
       <Controls />
     </ReactFlow>
+  );
+}
+
+const RELATION_OPTIONS: Array<{
+  value: IdeaRelationKind;
+  label: string;
+  description: string;
+}> = [
+  { value: "derivation", label: "推导", description: "由前一个想法推出" },
+  { value: "association", label: "联想", description: "横向跳出的相关想法" },
+  { value: "support", label: "支撑", description: "补充依据或背景" },
+  { value: "conflict", label: "冲突", description: "张力、矛盾或反例" },
+  { value: "analogy", label: "类比", description: "结构相似的参照" },
+  { value: "pending", label: "待判定", description: "先保留关系，不急着定性" }
+];
+
+function RelationEditor({
+  relation,
+  onChange,
+  onClose
+}: {
+  relation: {
+    relationKind: IdeaRelationKind;
+    x: number;
+    y: number;
+  } | null;
+  onChange: (relationKind: IdeaRelationKind) => void;
+  onClose: () => void;
+}) {
+  if (!relation) {
+    return null;
+  }
+
+  return (
+    <div
+      className="absolute z-50 w-72 rounded-[1.3rem] border border-stone-900/10 bg-[#fff8e8]/95 p-3 shadow-2xl shadow-stone-900/15 backdrop-blur"
+      style={{
+        left: relation.x,
+        top: relation.y
+      }}
+    >
+      <div className="mb-2 flex items-center justify-between">
+        <p className="text-[10px] font-semibold tracking-[0.24em] text-[#667a4d]">
+          关系校正
+        </p>
+        <button
+          type="button"
+          onClick={onClose}
+          className="rounded-full px-2 py-1 text-xs text-stone-500 hover:bg-stone-900/5"
+        >
+          关闭
+        </button>
+      </div>
+      <div className="grid gap-1.5">
+        {RELATION_OPTIONS.map((option) => {
+          const selected = option.value === relation.relationKind;
+
+          return (
+            <button
+              key={option.value}
+              type="button"
+              onClick={() => onChange(option.value)}
+              className={`rounded-2xl px-3 py-2 text-left transition ${
+                selected
+                  ? "bg-[#667a4d] text-[#fff8e8]"
+                  : "bg-white/45 text-[#2c241b] hover:bg-white/70"
+              }`}
+            >
+              <span className="block text-sm font-semibold">{option.label}</span>
+              <span
+                className={`mt-0.5 block text-xs ${
+                  selected ? "text-[#fff8e8]/75" : "text-stone-500"
+                }`}
+              >
+                {option.description}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function isEditableRelationKind(value: unknown): value is IdeaRelationKind {
+  return (
+    value === "derivation" ||
+    value === "association" ||
+    value === "support" ||
+    value === "conflict" ||
+    value === "analogy" ||
+    value === "pending"
   );
 }
 
@@ -511,14 +829,20 @@ function TagTray({ data }: { data: InspirationFlowNodeData }) {
     <div className="pointer-events-auto absolute left-4 top-full z-20 hidden -translate-y-2 pt-2 group-hover:block">
       <div className="flex flex-wrap gap-1.5">
         {data.tags.map((tag) => (
-          <span
+          <button
             key={tag}
+            type="button"
             onMouseEnter={() => data.onTagHover?.(tag)}
             onMouseLeave={() => data.onTagHover?.(null)}
-            className="rounded-full border border-[#667a4d]/15 bg-[#fff8e8]/95 px-2.5 py-1 text-[10px] font-medium text-[#667a4d] shadow-sm shadow-stone-900/10"
+            onClick={() => data.onTagClick?.(tag)}
+            className={`cursor-pointer rounded-full border px-2.5 py-1 text-[10px] font-medium shadow-sm shadow-stone-900/10 transition ${
+              isTagLocked(tag, data.lockedTag ?? null)
+                ? "border-[#f4c96b]/80 bg-[#f4c96b]/35 text-[#5d4b10] ring-2 ring-[#f4c96b]/35"
+                : "border-[#667a4d]/15 bg-[#fff8e8]/95 text-[#667a4d]"
+            }`}
           >
             {tag}
-          </span>
+          </button>
         ))}
       </div>
     </div>

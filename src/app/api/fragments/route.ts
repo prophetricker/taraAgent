@@ -1,7 +1,12 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { createFragment, listFragments } from "@/db/queries";
+import {
+  getConversationForUser,
+  getNodeForUser,
+  createFragment,
+  listFragments
+} from "@/db/queries";
 import { requireUser } from "@/lib/auth";
 import { findDuplicateFragment } from "@/lib/fragments";
 
@@ -21,9 +26,19 @@ export async function GET(request: Request) {
   }
 
   const { searchParams } = new URL(request.url);
+  const nodeId = searchParams.get("node_id");
+
+  if (nodeId) {
+    const node = await getNodeForUser({ userId: user.id, nodeId });
+
+    if (!node) {
+      return NextResponse.json({ error: "Node not found" }, { status: 404 });
+    }
+  }
+
   const fragments = await listFragments({
     userId: user.id,
-    nodeId: searchParams.get("node_id")
+    nodeId
   });
 
   return NextResponse.json({ fragments });
@@ -37,6 +52,33 @@ export async function POST(request: Request) {
   }
 
   const input = createFragmentSchema.parse(await request.json());
+
+  if (input.nodeId) {
+    const node = await getNodeForUser({
+      userId: user.id,
+      nodeId: input.nodeId
+    });
+
+    if (!node) {
+      return NextResponse.json({ error: "Node not found" }, { status: 404 });
+    }
+  }
+
+  if (input.conversationId) {
+    const conversation = await getConversationForUser({
+      userId: user.id,
+      conversationId: input.conversationId,
+      nodeId: input.nodeId
+    });
+
+    if (!conversation) {
+      return NextResponse.json(
+        { error: "Conversation not found" },
+        { status: 404 }
+      );
+    }
+  }
+
   const existingFragments = await listFragments({
     userId: user.id,
     nodeId: input.nodeId

@@ -29,7 +29,9 @@ export type InspirationFlowNodeData = {
   sourceTitle?: string;
   vibe?: string;
   highlightedTag?: string | null;
+  lockedTag?: string | null;
   onTagHover?: (tag: string | null) => void;
+  onTagClick?: (tag: string) => void;
 };
 
 export type IdeaRelationKind =
@@ -40,6 +42,13 @@ export type IdeaRelationKind =
   | "analogy"
   | "capture"
   | "pending";
+
+export type IdeaRelationRecord = {
+  sourceNodeId: string;
+  targetNodeId: string;
+  relationKind: IdeaRelationKind;
+  strength?: number | null;
+};
 
 export type DandelionFragmentFlowRecord = {
   id: string;
@@ -66,6 +75,10 @@ type ExtensionLayout = {
 type ExtensionGroup = {
   id: string;
   members: Node<InspirationFlowNodeData>[];
+};
+
+type LayoutRelation = IdeaRelationRecord & {
+  strength: number;
 };
 
 const NODE_SIZE = {
@@ -139,6 +152,7 @@ export function buildRightBrainGraph(input: {
   };
   activeNodeId: string;
   fragments: DandelionFragmentFlowRecord[];
+  relations?: IdeaRelationRecord[];
   maxExtensions?: number;
   visibleFragmentIds?: string[];
 }): {
@@ -163,7 +177,9 @@ export function buildRightBrainGraph(input: {
   const extensionLayout = currentTopic
     ? layoutVisibleExtensions({
         nodes: extensionNodes,
+        currentTopic,
         edges: input.graph.edges,
+        relations: input.relations ?? [],
         activeNodeId: currentTopic.id,
         anchorPosition
       })
@@ -197,17 +213,19 @@ export function buildRightBrainGraph(input: {
     anchorPosition
   });
   const visibleTopicIds = new Set(topicNodes.map((node) => node.id));
-  const visibleTopicEdges = input.graph.edges.filter(
-    (edge) =>
-      visibleTopicIds.has(edge.source) &&
-      visibleTopicIds.has(edge.target) &&
-      shouldKeepVisibleEdge({
-        edge,
-        activeNodeId: currentTopic?.id ?? input.activeNodeId,
-        clusterIdByNodeId: extensionLayout.clusterIdByNodeId,
-        clusterSizes: extensionLayout.clusterSizes
-      })
-  );
+  const visibleTopicEdges = input.graph.edges
+    .filter(
+      (edge) =>
+        visibleTopicIds.has(edge.source) &&
+        visibleTopicIds.has(edge.target) &&
+        shouldKeepVisibleEdge({
+          edge,
+          activeNodeId: currentTopic?.id ?? input.activeNodeId,
+          clusterIdByNodeId: extensionLayout.clusterIdByNodeId,
+          clusterSizes: extensionLayout.clusterSizes
+        })
+    )
+    .map((edge) => applyRelationOverride(edge, input.relations ?? []));
 
   return {
     nodes: [...topicNodes, ...fragmentNodes],
@@ -217,7 +235,9 @@ export function buildRightBrainGraph(input: {
 
 function layoutVisibleExtensions(input: {
   nodes: Node<InspirationFlowNodeData>[];
+  currentTopic: Node<InspirationFlowNodeData>;
   edges: Edge[];
+  relations: IdeaRelationRecord[];
   activeNodeId: string;
   anchorPosition: { x: number; y: number };
 }): ExtensionLayout {
@@ -227,9 +247,15 @@ function layoutVisibleExtensions(input: {
     NODE_SIZE.dandelion.width,
     NODE_SIZE.dandelion.height
   );
-  const rootTags =
-    input.nodes.find((node) => node.id === input.activeNodeId)?.data.tags ?? [];
-  const groups = groupExtensionsBySimilarity(input.nodes);
+  const rootData = input.currentTopic.data;
+  const rootTags = rootData.tags;
+  const layoutRelations = normalizeLayoutRelations(input.relations);
+  const relationStrengthByPair = buildRelationStrengthByPair(layoutRelations);
+  const centerStrengthByNodeId = buildCenterStrengthByNodeId({
+    activeNodeId: input.activeNodeId,
+    relations: layoutRelations
+  });
+  const groups = groupExtensionsBySimilarity(input.nodes, relationStrengthByPair);
   const occupiedRects: EstimatedRect[] = [
     {
       ...input.anchorPosition,
@@ -243,8 +269,15 @@ function layoutVisibleExtensions(input: {
   const clusterSizes = new Map<string, number>();
 
   for (const [groupIndex, group] of groups.entries()) {
-    const groupAngle = getGroupAngle(group, groupIndex, groups.length);
     const representative = getGroupRepresentative(group, rootTags);
+    const groupAngle = getGroupAngle({
+      group,
+      representative,
+      groupIndex,
+      totalGroups: groups.length,
+      placedGroups: placedNodes,
+      anchorCenter
+    });
     const orderedGroup = [
       representative,
       ...group.members
@@ -261,16 +294,31 @@ function layoutVisibleExtensions(input: {
 
     for (const [indexInGroup, node] of orderedGroup.entries()) {
       const size = getNodeSize(node);
-      const centerSimilarity = getTagSimilarity(rootTags, node.data.tags);
+      const inferredCenterSimilarity = getNodeSimilarity(rootData, node.data);
+      const centerSimilarity = Math.max(
+        inferredCenterSimilarity,
+        centerStrengthByNodeId.get(node.id) ?? 0
+      );
       const ageIndex = input.nodes.findIndex((candidate) => candidate.id === node.id);
       const targetRadius =
-        340 +
-        (1 - centerSimilarity) * 240 +
-        Math.max(ageIndex, 0) * 18 +
+        300 +
+        (1 - centerSimilarity) * 340 +
+        Math.max(ageIndex, 0) * 8 +
         (node.id === representative.id ? 0 : indexInGroup * 34);
       const angle =
         groupAngle +
-        getGroupSpreadOffset(indexInGroup, orderedGroup.length) +
+        getGroupSpreadOffset({
+          index: indexInGroup,
+          total: orderedGroup.length,
+          strength:
+            node.id === representative.id
+              ? 1
+              : getPairRelationStrength(
+                  relationStrengthByPair,
+                  representative.id,
+                  node.id
+                )
+        }) +
         (hashText(node.id) % 17) * 0.004;
       const desiredPosition = {
         x: anchorCenter.x + Math.cos(angle) * targetRadius - size.width / 2,
@@ -284,7 +332,8 @@ function layoutVisibleExtensions(input: {
         anchorCenter,
         occupiedRects,
         placedNodes,
-        node
+        node,
+        relationStrengthByPair
       });
 
       occupiedRects.push({ ...position, ...size });
@@ -301,7 +350,9 @@ function layoutVisibleExtensions(input: {
       clusterIdByNodeId.set(node.id, group.id);
 
       if (node.id !== representative.id) {
-        inferredEdges.push(createInferredClusterEdge(representative, node));
+        inferredEdges.push(
+          createInferredClusterEdge(representative, node, input.relations)
+        );
       }
     }
   }
@@ -314,7 +365,10 @@ function layoutVisibleExtensions(input: {
   };
 }
 
-function groupExtensionsBySimilarity(nodes: Node<InspirationFlowNodeData>[]) {
+function groupExtensionsBySimilarity(
+  nodes: Node<InspirationFlowNodeData>[],
+  relationStrengthByPair: Map<string, number>
+) {
   const groups: ExtensionGroup[] = [];
 
   for (const node of nodes) {
@@ -323,7 +377,12 @@ function groupExtensionsBySimilarity(nodes: Node<InspirationFlowNodeData>[]) {
 
     for (const [index, group] of groups.entries()) {
       const score = Math.max(
-        ...group.members.map((member) => getNodeSimilarity(member.data, node.data))
+        ...group.members.map((member) =>
+          Math.max(
+            getNodeSimilarity(member.data, node.data),
+            getPairRelationStrength(relationStrengthByPair, member.id, node.id)
+          )
+        )
       );
 
       if (score > bestScore) {
@@ -345,11 +404,22 @@ function groupExtensionsBySimilarity(nodes: Node<InspirationFlowNodeData>[]) {
   return groups.sort((a, b) => getGroupSortKey(a).localeCompare(getGroupSortKey(b)));
 }
 
-function getGroupAngle(
-  group: ExtensionGroup,
-  groupIndex: number,
-  totalGroups: number
-) {
+function getGroupAngle(input: {
+  group: ExtensionGroup;
+  representative: Node<InspirationFlowNodeData>;
+  groupIndex: number;
+  totalGroups: number;
+  placedGroups: Node<InspirationFlowNodeData>[];
+  anchorCenter: { x: number; y: number };
+}) {
+  const {
+    group,
+    representative,
+    groupIndex,
+    totalGroups,
+    placedGroups,
+    anchorCenter
+  } = input;
   const primaryTag = getGroupSortKey(group);
   const preferredAngles: Record<string, number> = {
     画布: -0.7,
@@ -366,7 +436,84 @@ function getGroupAngle(
     return preferredAngles[primaryTag];
   }
 
-  return normalizeAngle(-0.9 + (Math.PI * 2 * groupIndex) / Math.max(totalGroups, 1));
+  const ringAngles = getGroupAngleCandidates(groupIndex, totalGroups);
+  const relatedAngles = placedGroups.flatMap((placedNode) => {
+    const similarity = getNodeSimilarity(representative.data, placedNode.data);
+
+    if (similarity < 0.12) {
+      return [];
+    }
+
+    const placedCenter = getNodeCenter(
+      placedNode.position,
+      getNodeSize(placedNode).width,
+      getNodeSize(placedNode).height
+    );
+    const placedAngle = Math.atan2(
+      placedCenter.y - anchorCenter.y,
+      placedCenter.x - anchorCenter.x
+    );
+    const offset = 0.34 + (1 - similarity) * 0.28;
+
+    return [normalizeAngle(placedAngle - offset), normalizeAngle(placedAngle + offset)];
+  });
+  const candidates = [...relatedAngles, ...ringAngles];
+
+  return candidates
+    .map((angle) => ({
+      angle,
+      score: getGroupAngleScore(angle, representative, placedGroups, anchorCenter)
+    }))
+    .sort((a, b) => a.score - b.score)[0]?.angle ??
+    normalizeAngle(-0.9 + (Math.PI * 2 * groupIndex) / Math.max(totalGroups, 1));
+}
+
+function getGroupAngleCandidates(groupIndex: number, totalGroups: number) {
+  if (totalGroups <= 1) {
+    return [-0.28];
+  }
+
+  if (totalGroups <= 6) {
+    const span = Math.PI * 0.82;
+    const start = -span / 2;
+
+    return Array.from({ length: totalGroups }, (_, index) =>
+      normalizeAngle(start + (span * index) / Math.max(totalGroups - 1, 1))
+    );
+  }
+
+  return Array.from({ length: Math.max(totalGroups * 2, 9) }, (_, index) =>
+    normalizeAngle(-1.15 + (Math.PI * 1.35 * index) / Math.max(totalGroups * 2 - 1, 1))
+  );
+}
+
+function getGroupAngleScore(
+  angle: number,
+  representative: Node<InspirationFlowNodeData>,
+  placedGroups: Node<InspirationFlowNodeData>[],
+  anchorCenter: { x: number; y: number }
+) {
+  return placedGroups.reduce((score, placedNode) => {
+    const placedCenter = getNodeCenter(
+      placedNode.position,
+      getNodeSize(placedNode).width,
+      getNodeSize(placedNode).height
+    );
+    const placedAngle = Math.atan2(
+      placedCenter.y - anchorCenter.y,
+      placedCenter.x - anchorCenter.x
+    );
+    const angularDistance = getAngularDistance(angle, placedAngle);
+    const similarity = getNodeSimilarity(representative.data, placedNode.data);
+
+    if (similarity >= 0.12) {
+      const targetDistance = 0.34 + (1 - similarity) * 0.38;
+
+      return score + Math.abs(angularDistance - targetDistance) * similarity * 220;
+    }
+
+    return score + Math.max(0, 0.95 - angularDistance) * 120;
+  }, 0);
 }
 
 function getGroupSortKey(group: ExtensionGroup) {
@@ -385,12 +532,20 @@ function getGroupRepresentative(
   )[0]!;
 }
 
-function getGroupSpreadOffset(index: number, total: number) {
+function getGroupSpreadOffset(input: {
+  index: number;
+  total: number;
+  strength: number;
+}) {
+  const { index, total, strength } = input;
+
   if (total <= 1) {
     return 0;
   }
 
-  return (index - (total - 1) / 2) * 0.24;
+  const compressedSpread = 0.12 + (1 - clamp01(strength)) * 0.22;
+
+  return (index - (total - 1) / 2) * compressedSpread;
 }
 
 function chooseReadablePosition(input: {
@@ -402,21 +557,37 @@ function chooseReadablePosition(input: {
   occupiedRects: EstimatedRect[];
   placedNodes: Node<InspirationFlowNodeData>[];
   node: Node<InspirationFlowNodeData>;
+  relationStrengthByPair: Map<string, number>;
 }) {
-  const candidates = getLayoutCandidates(input).map((position) => {
+  const candidates = getLayoutCandidates({
+    desiredPosition: input.desiredPosition,
+    size: input.size,
+    angle: input.angle,
+    radius: input.radius,
+    anchorCenter: input.anchorCenter,
+    placedNodes: input.placedNodes,
+    node: input.node,
+    relationStrengthByPair: input.relationStrengthByPair
+  }).map((position) => {
     const rect = { ...position, ...input.size };
 
     return {
       position,
       score:
         getOverlapPenalty(rect, input.occupiedRects, 54, 40) +
-        getSemanticDistancePenalty(input.node, position, input.placedNodes) +
+        getSemanticDistancePenalty(
+          input.node,
+          position,
+          input.placedNodes,
+          input.relationStrengthByPair
+        ) +
         getDistance(
           getNodeCenter(position, input.size.width, input.size.height),
           input.anchorCenter
         ) *
           0.03 +
-        getDistance(position, input.desiredPosition) * 0.7
+        getDistance(position, input.desiredPosition) *
+          getDesiredPositionWeight(input.node, position, input.placedNodes, input.relationStrengthByPair)
     };
   });
 
@@ -429,6 +600,9 @@ function getLayoutCandidates(input: {
   angle: number;
   radius: number;
   anchorCenter: { x: number; y: number };
+  placedNodes?: Node<InspirationFlowNodeData>[];
+  node?: Node<InspirationFlowNodeData>;
+  relationStrengthByPair?: Map<string, number>;
 }) {
   const candidates: Array<{ x: number; y: number }> = [];
 
@@ -444,23 +618,129 @@ function getLayoutCandidates(input: {
     }
   }
 
+  if (input.placedNodes && input.node && input.relationStrengthByPair) {
+    candidates.push(
+      ...getRelatedNodeCandidates({
+        node: input.node,
+        size: input.size,
+        placedNodes: input.placedNodes,
+        anchorCenter: input.anchorCenter,
+        relationStrengthByPair: input.relationStrengthByPair
+      })
+    );
+  }
+
   candidates.push(input.desiredPosition);
 
   return candidates;
 }
 
+function getRelatedNodeCandidates(input: {
+  node: Node<InspirationFlowNodeData>;
+  size: { width: number; height: number };
+  placedNodes: Node<InspirationFlowNodeData>[];
+  anchorCenter: { x: number; y: number };
+  relationStrengthByPair: Map<string, number>;
+}) {
+  return input.placedNodes
+    .map((placedNode) => ({
+      node: placedNode,
+      similarity: Math.max(
+        getNodeSimilarity(input.node.data, placedNode.data),
+        getPairRelationStrength(
+          input.relationStrengthByPair,
+          input.node.id,
+          placedNode.id
+        )
+      )
+    }))
+    .filter((entry) => entry.similarity >= 0.2)
+    .sort((a, b) => b.similarity - a.similarity)
+    .slice(0, 2)
+    .flatMap((entry) => {
+      const placedSize = getNodeSize(entry.node);
+      const placedCenter = getNodeCenter(
+        entry.node.position,
+        placedSize.width,
+        placedSize.height
+      );
+      const outwardAngle = Math.atan2(
+        placedCenter.y - input.anchorCenter.y,
+        placedCenter.x - input.anchorCenter.x
+      );
+      const tangentAngle = outwardAngle + Math.PI / 2;
+      const targetGap = 34 + (1 - entry.similarity) * 38;
+      const centerDistance =
+        (placedSize.width + input.size.width) / 2 + targetGap;
+      const candidates: Array<{ x: number; y: number }> = [];
+
+      for (const angle of [
+        tangentAngle,
+        tangentAngle + Math.PI,
+        outwardAngle + 0.42,
+        outwardAngle - 0.42
+      ]) {
+        candidates.push({
+          x: placedCenter.x + Math.cos(angle) * centerDistance - input.size.width / 2,
+          y: placedCenter.y + Math.sin(angle) * centerDistance - input.size.height / 2
+        });
+      }
+
+      return candidates;
+    });
+}
+
+function getDesiredPositionWeight(
+  node: Node<InspirationFlowNodeData>,
+  position: { x: number; y: number },
+  placedNodes: Node<InspirationFlowNodeData>[],
+  relationStrengthByPair: Map<string, number>
+) {
+  const nodeSize = getNodeSize(node);
+  const center = getNodeCenter(position, nodeSize.width, nodeSize.height);
+  const strongestNearbySimilarity = placedNodes.reduce((strongest, placedNode) => {
+    const placedSize = getNodeSize(placedNode);
+    const placedCenter = getNodeCenter(
+      placedNode.position,
+      placedSize.width,
+      placedSize.height
+    );
+    const similarity = Math.max(
+      getNodeSimilarity(node.data, placedNode.data),
+      getPairRelationStrength(relationStrengthByPair, node.id, placedNode.id)
+    );
+    const distance = getDistance(center, placedCenter);
+    const relatedDistance =
+      (nodeSize.width + placedSize.width) / 2 + 140;
+
+    if (similarity < 0.2 || distance > relatedDistance) {
+      return strongest;
+    }
+
+    return Math.max(strongest, similarity);
+  }, 0);
+
+  return strongestNearbySimilarity > 0
+    ? 0.18 + (1 - strongestNearbySimilarity) * 0.24
+    : 0.7;
+}
+
 function getSemanticDistancePenalty(
   node: Node<InspirationFlowNodeData>,
   position: { x: number; y: number },
-  placedNodes: Node<InspirationFlowNodeData>[]
+  placedNodes: Node<InspirationFlowNodeData>[],
+  relationStrengthByPair: Map<string, number>
 ) {
   const nodeSize = getNodeSize(node);
   const center = getNodeCenter(position, nodeSize.width, nodeSize.height);
 
   return placedNodes.reduce((penalty, placedNode) => {
-    const similarity = getTagSimilarity(node.data.tags, placedNode.data.tags);
+    const similarity = Math.max(
+      getNodeSimilarity(node.data, placedNode.data),
+      getPairRelationStrength(relationStrengthByPair, node.id, placedNode.id)
+    );
 
-    if (similarity <= 0) {
+    if (similarity <= 0.08) {
       return penalty;
     }
 
@@ -471,9 +751,9 @@ function getSemanticDistancePenalty(
       placedSize.height
     );
     const distance = getDistance(center, placedCenter);
-    const targetDistance = 300 - similarity * 120;
+    const targetDistance = 330 - similarity * 170;
 
-    return penalty + Math.abs(distance - targetDistance) * similarity * 1.8;
+    return penalty + Math.abs(distance - targetDistance) * similarity * 2.4;
   }, 0);
 }
 
@@ -493,8 +773,20 @@ function getNodeSimilarity(
     `${a.displayTitle} ${a.summary}`,
     `${b.displayTitle} ${b.summary}`
   );
+  const phraseSimilarity = getPhraseSimilarity(
+    `${a.displayTitle} ${a.summary}`,
+    `${b.displayTitle} ${b.summary}`
+  );
+  const conceptSimilarity = getConceptSimilarity(
+    `${a.displayTitle} ${a.summary}`,
+    `${b.displayTitle} ${b.summary}`
+  );
 
-  const blendedSimilarity = tagSimilarity * 0.55 + textSimilarity * 0.45;
+  const blendedSimilarity =
+    tagSimilarity * 0.34 +
+    textSimilarity * 0.24 +
+    phraseSimilarity * 0.22 +
+    conceptSimilarity * 0.2;
 
   if (textSimilarity >= 0.92) {
     return Math.max(blendedSimilarity, 0.86);
@@ -504,7 +796,194 @@ function getNodeSimilarity(
     return Math.max(blendedSimilarity, 0.72);
   }
 
+  if (conceptSimilarity >= 0.28) {
+    return Math.max(blendedSimilarity, 0.42);
+  }
+
+  if (phraseSimilarity >= 0.26) {
+    return Math.max(blendedSimilarity, 0.46);
+  }
+
   return blendedSimilarity;
+}
+
+function getPhraseSimilarity(a: string, b: string) {
+  const left = new Set(getPhraseTokens(a));
+  const right = new Set(getPhraseTokens(b));
+
+  if (left.size === 0 || right.size === 0) {
+    return 0;
+  }
+
+  const intersection = [...left].filter((token) => right.has(token)).length;
+  const union = new Set([...left, ...right]).size;
+
+  return union === 0 ? 0 : intersection / union;
+}
+
+function getPhraseTokens(value: string) {
+  const normalized = value
+    .normalize("NFKC")
+    .replace(/[^\p{Letter}\p{Number}\u4e00-\u9fff]+/gu, "");
+  const tokens = new Set<string>();
+
+  for (let index = 0; index < normalized.length - 1; index += 1) {
+    const token = normalized.slice(index, index + 2);
+
+    if (!isLowSignalToken(token)) {
+      tokens.add(token);
+    }
+  }
+
+  return [...tokens];
+}
+
+function isLowSignalToken(token: string) {
+  return /^(这个|那个|当前|一个|用户|知道|可以|直接|之后|讨论|需要|想法)$/u.test(
+    token
+  );
+}
+
+function normalizeLayoutRelations(relations: IdeaRelationRecord[]) {
+  return relations.map((relation) => ({
+    ...relation,
+    strength: clamp01(
+      relation.strength ??
+        relationKindToStrength(relation.relationKind)
+    )
+  }));
+}
+
+function buildRelationStrengthByPair(relations: LayoutRelation[]) {
+  const map = new Map<string, number>();
+
+  for (const relation of relations) {
+    const key = getRelationPairKey(relation.sourceNodeId, relation.targetNodeId);
+    const reverseKey = getRelationPairKey(relation.targetNodeId, relation.sourceNodeId);
+    const current = map.get(key) ?? 0;
+
+    map.set(key, Math.max(current, relation.strength));
+    map.set(reverseKey, Math.max(map.get(reverseKey) ?? 0, relation.strength));
+  }
+
+  return map;
+}
+
+function buildCenterStrengthByNodeId(input: {
+  activeNodeId: string;
+  relations: LayoutRelation[];
+}) {
+  const map = new Map<string, number>();
+
+  for (const relation of input.relations) {
+    if (
+      relation.sourceNodeId === input.activeNodeId &&
+      relation.targetNodeId !== input.activeNodeId
+    ) {
+      const current = map.get(relation.targetNodeId) ?? 0;
+      map.set(relation.targetNodeId, Math.max(current, relation.strength));
+    }
+  }
+
+  return map;
+}
+
+function getPairRelationStrength(
+  relationStrengthByPair: Map<string, number>,
+  leftId: string,
+  rightId: string
+) {
+  return relationStrengthByPair.get(getRelationPairKey(leftId, rightId)) ?? 0;
+}
+
+function getRelationPairKey(leftId: string, rightId: string) {
+  return `${leftId}::${rightId}`;
+}
+
+function relationKindToStrength(kind: IdeaRelationKind) {
+  switch (kind) {
+    case "derivation":
+      return 1;
+    case "support":
+      return 0.82;
+    case "analogy":
+      return 0.7;
+    case "association":
+      return 0.56;
+    case "conflict":
+      return 0.48;
+    case "pending":
+      return 0.28;
+    case "capture":
+    default:
+      return 0;
+  }
+}
+
+function getConceptSimilarity(a: string, b: string) {
+  const left = new Set(getConceptTokens(a));
+  const right = new Set(getConceptTokens(b));
+
+  if (left.size === 0 || right.size === 0) {
+    return 0;
+  }
+
+  const intersection = [...left].filter((token) => right.has(token)).length;
+  const union = new Set([...left, ...right]).size;
+  const domainBoost = getSharedConceptDomain(left, right) ? 0.24 : 0;
+
+  return Math.min(1, (union === 0 ? 0 : intersection / union) + domainBoost);
+}
+
+function getConceptTokens(value: string) {
+  const normalized = value.normalize("NFKC").toLowerCase();
+  const tokens = [
+    "宏观",
+    "微观",
+    "学习",
+    "框架",
+    "步骤",
+    "目标",
+    "边界",
+    "练习",
+    "反馈",
+    "入口",
+    "开场",
+    "开始",
+    "提示",
+    "引导",
+    "体验",
+    "画布",
+    "连线",
+    "关系",
+    "布局",
+    "中心",
+    "延伸",
+    "碎片",
+    "标题",
+    "文案",
+    "聚类",
+    "合并",
+    "视角"
+  ];
+
+  return tokens.filter((token) => normalized.includes(token));
+}
+
+function getSharedConceptDomain(left: Set<string>, right: Set<string>) {
+  const domains = [
+    ["宏观", "微观", "学习", "框架", "步骤", "目标", "练习", "反馈"],
+    ["入口", "开场", "开始", "提示", "引导", "体验"],
+    ["画布", "连线", "关系", "布局", "中心", "延伸", "碎片"],
+    ["标题", "文案", "归纳"],
+    ["聚类", "合并"]
+  ];
+
+  return domains.some(
+    (domain) =>
+      domain.some((token) => left.has(token)) &&
+      domain.some((token) => right.has(token))
+  );
 }
 
 function getTextSimilarity(a: string, b: string) {
@@ -726,10 +1205,21 @@ function getTagSimilarity(a: string[], b: string[]) {
 
 function createInferredClusterEdge(
   representativeNode: Node<InspirationFlowNodeData>,
-  targetNode: Node<InspirationFlowNodeData>
+  targetNode: Node<InspirationFlowNodeData>,
+  relations: IdeaRelationRecord[]
 ) {
   const similarity = getNodeSimilarity(representativeNode.data, targetNode.data);
-  const relationKind = getInferredRelationKind(similarity);
+  const userRelation = findRelationOverride(
+    relations,
+    representativeNode.id,
+    targetNode.id
+  );
+  const relationKind =
+    userRelation?.relationKind ?? getInferredRelationKind(similarity);
+  const strength =
+    userRelation?.strength ??
+    relationKindToStrength(relationKind) ??
+    similarity;
 
   return {
     id: `inferred-${representativeNode.id}-${targetNode.id}`,
@@ -740,7 +1230,39 @@ function createInferredClusterEdge(
     ...getRelationVisualStyle(relationKind),
     data: {
       relationKind,
-      inferred: true
+      inferred: true,
+      userEdited: Boolean(userRelation),
+      strength
+    }
+  };
+}
+
+function findRelationOverride(
+  relations: IdeaRelationRecord[],
+  sourceNodeId: string,
+  targetNodeId: string
+) {
+  return relations.find(
+    (relation) =>
+      relation.sourceNodeId === sourceNodeId &&
+      relation.targetNodeId === targetNodeId
+  );
+}
+
+function applyRelationOverride(edge: Edge, relations: IdeaRelationRecord[]) {
+  const userRelation = findRelationOverride(relations, edge.source, edge.target);
+
+  if (!userRelation) {
+    return edge;
+  }
+
+  return {
+    ...edge,
+    ...getRelationVisualStyle(userRelation.relationKind),
+    data: {
+      ...edge.data,
+      relationKind: userRelation.relationKind,
+      userEdited: true
     }
   };
 }
@@ -912,6 +1434,14 @@ function normalizeAngle(angle: number) {
   }
 
   return normalized;
+}
+
+function getAngularDistance(a: number, b: number) {
+  return Math.abs(normalizeAngle(a - b));
+}
+
+function clamp01(value: number) {
+  return Math.min(1, Math.max(0, value));
 }
 
 function hashText(text: string) {

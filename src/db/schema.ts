@@ -59,3 +59,13 @@ export const dandelionFragments = pgTable("dandelion_fragments", {
   sentimentVibe: text("sentiment_vibe"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
 });
+
+export const ideaRelations = pgTable("idea_relations", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  userId: uuid("user_id").notNull(),
+  sourceNodeId: uuid("source_node_id").notNull(),
+  targetNodeId: uuid("target_node_id").notNull(),
+  relationKind: text("relation_kind").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+});

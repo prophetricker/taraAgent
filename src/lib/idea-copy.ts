@@ -31,6 +31,19 @@ export function formatIdeaNodeCopy(input: IdeaNodeCopyInput) {
   const combined = normalizeText(`${input.title} ${input.content}`);
   const source = normalizeText(input.content || input.title);
   const tags = extractIdeaTags(combined);
+  const trustedCopy = getTrustedStoredCopy({
+    title: input.title,
+    source,
+    role: input.role ?? "extension"
+  });
+
+  if (trustedCopy) {
+    return {
+      ...trustedCopy,
+      tags
+    };
+  }
+
   const title = createDisplayTitle({
     title: input.title,
     source,
@@ -50,6 +63,51 @@ export function formatIdeaNodeCopy(input: IdeaNodeCopyInput) {
     }),
     tags
   };
+}
+
+function getTrustedStoredCopy(input: {
+  title: string;
+  source: string;
+  role: "dandelion" | "extension";
+}) {
+  const rawTitle = normalizeText(input.title);
+  const title = cleanTitle(input.title);
+  const summary = ensureSentence(normalizeText(input.source));
+
+  if (
+    !isTrustedStoredTitle(title, rawTitle) ||
+    !isTrustedStoredSummary(summary, title)
+  ) {
+    return null;
+  }
+
+  return {
+    displayTitle: title,
+    summary:
+      input.role === "dandelion"
+        ? summary.slice(0, 220)
+        : summary.slice(0, 120)
+  };
+}
+
+function isTrustedStoredTitle(title: string, rawTitle: string) {
+  return (
+    title.length >= 4 &&
+    !looksLowSignal(title) &&
+    !/^(当|如果|因为|所以|然后|以及|但是|不过)/u.test(rawTitle) &&
+    !/[，。！？!?；;]/u.test(title) &&
+    !/^(我|我们|这个|那个|现在|目前|其实|可能|应该|需要|功能|节点|右侧|延伸之间)/u.test(title) &&
+    !/(太|有待|要能|不能|不该|需要|应该)/u.test(title)
+  );
+}
+
+function isTrustedStoredSummary(summary: string, title: string) {
+  return (
+    summary.length >= 24 &&
+    summary !== title &&
+    !/^(我觉得|我认为|我发现|其实|就是|这个|那个)/u.test(summary) &&
+    !/^我/u.test(summary)
+  );
 }
 
 export function extractIdeaTags(text: string) {
@@ -271,6 +329,14 @@ function cleanTitle(value: string) {
     .filter(Boolean);
 
   return (firstClause || cleanLead(value)).slice(0, 18);
+}
+
+function ensureSentence(value: string) {
+  if (!value) {
+    return "";
+  }
+
+  return /[。！？!?]$/u.test(value) ? value : `${value}。`;
 }
 
 function cleanLead(value: string) {

@@ -394,6 +394,258 @@ describe("buildRightBrainGraph", () => {
     );
   });
 
+  it("keeps semantically related newer extensions nearer to the center than older unrelated ones", () => {
+    const graph = buildRightBrainGraph({
+      graph: {
+        nodes: [
+          createFlowNode({
+            id: "root",
+            kind: "dandelion",
+            tags: [],
+            title: "学习路径",
+            summary: "这颗蒲公英从如何真正学会一件事发起，关注宏观方向和微观步骤的配合。",
+            createdAt: "2026-04-27T00:00:00.000Z"
+          }),
+          createFlowNode({
+            id: "older-unrelated",
+            parentId: "root",
+            tags: [],
+            title: "线下活动预算",
+            summary: "以后单独讨论线下活动预算、人员安排和物料采购。",
+            createdAt: "2026-04-27T00:00:01.000Z"
+          }),
+          createFlowNode({
+            id: "newer-related",
+            parentId: "root",
+            tags: [],
+            title: "先宏观后微观",
+            summary: "先用宏观方向确认要学什么，再进入微观步骤，避免陷入碎片细节。",
+            createdAt: "2026-04-27T00:00:02.000Z"
+          })
+        ],
+        edges: [
+          createFlowEdge("root", "older-unrelated"),
+          createFlowEdge("root", "newer-related")
+        ]
+      },
+      activeNodeId: "root",
+      fragments: []
+    });
+    const root = graph.nodes.find((node) => node.id === "root")!;
+    const olderUnrelated = graph.nodes.find(
+      (node) => node.id === "older-unrelated"
+    )!;
+    const newerRelated = graph.nodes.find(
+      (node) => node.id === "newer-related"
+    )!;
+
+    expect(centerDistance(root, newerRelated)).toBeLessThan(
+      centerDistance(root, olderUnrelated)
+    );
+  });
+
+  it("uses semantic similarity, not only tag overlap, to place related extensions close", () => {
+    const graph = buildRightBrainGraph({
+      graph: {
+        nodes: [
+          createFlowNode({
+            id: "root",
+            kind: "dandelion",
+            tags: ["product"],
+            createdAt: "2026-04-27T00:00:00.000Z"
+          }),
+          createFlowNode({
+            id: "macro-step",
+            parentId: "root",
+            tags: ["learning"],
+            title: "宏观学习框架",
+            summary: "先用宏观框架确认目标、边界和问题结构。",
+            createdAt: "2026-04-27T00:00:01.000Z"
+          }),
+          createFlowNode({
+            id: "micro-step",
+            parentId: "root",
+            tags: ["practice"],
+            title: "微观学习步骤",
+            summary: "再用微观步骤推进练习、反馈和细节掌握。",
+            createdAt: "2026-04-27T00:00:02.000Z"
+          }),
+          createFlowNode({
+            id: "budget",
+            parentId: "root",
+            tags: ["finance"],
+            title: "预算管理",
+            summary: "以后单独讨论预算、人员和物料安排。",
+            createdAt: "2026-04-27T00:00:03.000Z"
+          })
+        ],
+        edges: [
+          createFlowEdge("root", "macro-step"),
+          createFlowEdge("root", "micro-step"),
+          createFlowEdge("root", "budget")
+        ]
+      },
+      activeNodeId: "root",
+      fragments: []
+    });
+    const macroStep = graph.nodes.find((node) => node.id === "macro-step")!;
+    const microStep = graph.nodes.find((node) => node.id === "micro-step")!;
+    const budget = graph.nodes.find((node) => node.id === "budget")!;
+
+    expect(centerDistance(macroStep, microStep)).toBeLessThan(
+      centerDistance(macroStep, budget)
+    );
+  });
+
+  it("clusters related extensions by their mutual distance instead of keeping even spokes", () => {
+    const graph = buildRightBrainGraph({
+      graph: {
+        nodes: [
+          createFlowNode({
+            id: "root",
+            kind: "dandelion",
+            tags: [],
+            title: "产品入口",
+            summary: "这颗蒲公英从用户进入产品后如何开始发起。",
+            createdAt: "2026-04-27T00:00:00.000Z"
+          }),
+          createFlowNode({
+            id: "entry-start",
+            parentId: "root",
+            tags: [],
+            title: "入口开场",
+            summary: "第一屏要给用户一个明确开场，让他知道可以直接说出当前想法。",
+            createdAt: "2026-04-27T00:00:01.000Z"
+          }),
+          createFlowNode({
+            id: "entry-hint",
+            parentId: "root",
+            tags: [],
+            title: "开始提示",
+            summary: "开场提示要承接入口体验，降低用户不知道如何开始的犹豫。",
+            createdAt: "2026-04-27T00:00:02.000Z"
+          }),
+          createFlowNode({
+            id: "operation",
+            parentId: "root",
+            tags: [],
+            title: "社群运营",
+            summary: "之后再讨论社群节奏、内容发布和种子用户维护。",
+            createdAt: "2026-04-27T00:00:03.000Z"
+          }),
+          createFlowNode({
+            id: "budget",
+            parentId: "root",
+            tags: [],
+            title: "预算安排",
+            summary: "以后单独估算服务器成本、推广预算和外部协作支出。",
+            createdAt: "2026-04-27T00:00:04.000Z"
+          })
+        ],
+        edges: [
+          createFlowEdge("root", "entry-start"),
+          createFlowEdge("root", "entry-hint"),
+          createFlowEdge("root", "operation"),
+          createFlowEdge("root", "budget")
+        ]
+      },
+      activeNodeId: "root",
+      fragments: []
+    });
+    const entryStart = graph.nodes.find((node) => node.id === "entry-start")!;
+    const entryHint = graph.nodes.find((node) => node.id === "entry-hint")!;
+    const operation = graph.nodes.find((node) => node.id === "operation")!;
+    const budget = graph.nodes.find((node) => node.id === "budget")!;
+
+    expect(centerDistance(entryStart, entryHint)).toBeLessThan(
+      centerDistance(entryStart, operation)
+    );
+    expect(centerDistance(entryStart, entryHint)).toBeLessThan(
+      centerDistance(entryHint, budget)
+    );
+    expect(centerDistance(entryStart, entryHint)).toBeLessThan(300);
+  });
+
+  it("does not spread weakly related extensions evenly around the whole center", () => {
+    const graph = buildRightBrainGraph({
+      graph: {
+        nodes: [
+          createFlowNode({
+            id: "root",
+            kind: "dandelion",
+            tags: [],
+            title: "从仓库扫描到最短反馈",
+            summary:
+              "这颗蒲公英从学习路径过长、反馈太慢发起，想先找到可验证的最短路径。",
+            createdAt: "2026-04-27T00:00:00.000Z"
+          }),
+          createFlowNode({
+            id: "path",
+            parentId: "root",
+            tags: [],
+            title: "最短可观察反馈路径",
+            summary:
+              "优先通过仓库扫描和最小入口跑通路径，避免一开始就做完整系统。",
+            createdAt: "2026-04-27T00:00:01.000Z"
+          }),
+          createFlowNode({
+            id: "mvp",
+            parentId: "root",
+            tags: [],
+            title: "先跑通的最小MVP主线",
+            summary:
+              "第一阶段只保留能被观察和验证的主线，让系统先出现稳定结果。",
+            createdAt: "2026-04-27T00:00:02.000Z"
+          }),
+          createFlowNode({
+            id: "project",
+            parentId: "root",
+            tags: [],
+            title: "保护中保持 Hermes 那样的进",
+            summary:
+              "要保留想法的流动性，同时让它逐步进入可验证的项目进展。",
+            createdAt: "2026-04-27T00:00:03.000Z"
+          }),
+          createFlowNode({
+            id: "same",
+            parentId: "root",
+            tags: [],
+            title: "时于王者一个还没成形的想法",
+            summary:
+              "允许未成形的想法先被放在旁边，等到关系清晰后再收束。",
+            createdAt: "2026-04-27T00:00:04.000Z"
+          }),
+          createFlowNode({
+            id: "archive",
+            parentId: "root",
+            tags: [],
+            title: "浮即能是",
+            summary:
+              "知识沉淀要服务于下一次反馈，而不是只留下孤立记录。",
+            createdAt: "2026-04-27T00:00:05.000Z"
+          })
+        ],
+        edges: [
+          createFlowEdge("root", "path"),
+          createFlowEdge("root", "mvp"),
+          createFlowEdge("root", "project"),
+          createFlowEdge("root", "same"),
+          createFlowEdge("root", "archive")
+        ]
+      },
+      activeNodeId: "root",
+      fragments: []
+    });
+    const root = graph.nodes.find((node) => node.id === "root")!;
+    const extensions = graph.nodes.filter((node) => node.data.kind === "extension");
+    const angles = extensions
+      .map((node) => angleFrom(root, node))
+      .sort((a, b) => a - b);
+    const spread = getSmallestCoveringAngle(angles);
+
+    expect(spread).toBeLessThan(Math.PI * 1.05);
+  });
+
   it("uses inferred extension-to-extension edges inside related clusters", () => {
     const graph = buildRightBrainGraph({
       graph: {
@@ -451,6 +703,103 @@ describe("buildRightBrainGraph", () => {
     expect(["derivation", "support", "association"]).toContain(
       inferredClusterEdge?.data?.relationKind
     );
+  });
+
+  it("lets user-edited relation kinds override inferred extension relations", () => {
+    const graph = buildRightBrainGraph({
+      graph: {
+        nodes: [
+          createFlowNode({
+            id: "root",
+            kind: "dandelion",
+            tags: ["canvas", "layout"],
+            createdAt: "2026-04-27T00:00:00.000Z"
+          }),
+          createFlowNode({
+            id: "layout-a",
+            parentId: "root",
+            tags: ["canvas", "layout"],
+            createdAt: "2026-04-27T00:00:01.000Z"
+          }),
+          createFlowNode({
+            id: "layout-b",
+            parentId: "root",
+            tags: ["canvas", "layout"],
+            createdAt: "2026-04-27T00:00:02.000Z"
+          })
+        ],
+        edges: [
+          createFlowEdge("root", "layout-a"),
+          createFlowEdge("root", "layout-b")
+        ]
+      },
+      activeNodeId: "root",
+      fragments: [],
+      relations: [
+        {
+          sourceNodeId: "layout-a",
+          targetNodeId: "layout-b",
+          relationKind: "conflict"
+        }
+      ]
+    });
+    const edge = graph.edges.find(
+      (candidate) => candidate.source === "layout-a" && candidate.target === "layout-b"
+    );
+
+    expect(edge).toMatchObject({
+      label: "冲突",
+      data: {
+        relationKind: "conflict",
+        userEdited: true
+      }
+    });
+  });
+
+  it("lets user-edited relation kinds override parent extension relations", () => {
+    const graph = buildRightBrainGraph({
+      graph: toFlowGraph([
+        {
+          id: "root",
+          parentId: null,
+          title: "当前蒲公英",
+          content: "中心",
+          positionX: 0,
+          positionY: 0,
+          createdAt: "2026-04-27T00:00:00.000Z",
+          updatedAt: "2026-04-27T00:00:00.000Z"
+        },
+        {
+          id: "child",
+          parentId: "root",
+          title: "延伸",
+          content: "一个延伸",
+          positionX: 0,
+          positionY: 0,
+          createdAt: "2026-04-27T00:00:01.000Z",
+          updatedAt: "2026-04-27T00:00:01.000Z"
+        }
+      ]),
+      activeNodeId: "root",
+      fragments: [],
+      relations: [
+        {
+          sourceNodeId: "root",
+          targetNodeId: "child",
+          relationKind: "association"
+        }
+      ]
+    });
+
+    expect(graph.edges[0]).toMatchObject({
+      source: "root",
+      target: "child",
+      label: "联想",
+      data: {
+        relationKind: "association",
+        userEdited: true
+      }
+    });
   });
 
   it("treats duplicate extension copy as a strong relation even when tags are sparse", () => {
@@ -512,6 +861,88 @@ describe("buildRightBrainGraph", () => {
           edge.data?.relationKind === "derivation"
       )
     ).toBe(true);
+  });
+
+  it("uses explicit relation strength before falling back to even radial spacing", () => {
+    const graph = buildRightBrainGraph({
+      graph: {
+        nodes: [
+          createFlowNode({
+            id: "root",
+            kind: "dandelion",
+            tags: [],
+            title: "产品方向",
+            summary: "这颗蒲公英从如何推进产品方向发起。",
+            createdAt: "2026-04-27T00:00:00.000Z"
+          }),
+          createFlowNode({
+            id: "core-a",
+            parentId: "root",
+            tags: [],
+            title: "入口体验",
+            summary: "进入页面后要先让用户知道从哪里开始。",
+            createdAt: "2026-04-27T00:00:01.000Z"
+          }),
+          createFlowNode({
+            id: "core-b",
+            parentId: "root",
+            tags: [],
+            title: "开场引导",
+            summary: "新用户需要明确的第一句话和操作提示。",
+            createdAt: "2026-04-27T00:00:02.000Z"
+          }),
+          createFlowNode({
+            id: "side",
+            parentId: "root",
+            tags: [],
+            title: "运营素材",
+            summary: "之后再讨论宣传物料和社群节奏。",
+            createdAt: "2026-04-27T00:00:03.000Z"
+          })
+        ],
+        edges: [
+          createFlowEdge("root", "core-a"),
+          createFlowEdge("root", "core-b"),
+          createFlowEdge("root", "side")
+        ]
+      },
+      relations: [
+        {
+          sourceNodeId: "root",
+          targetNodeId: "core-a",
+          relationKind: "derivation",
+          strength: 0.9
+        },
+        {
+          sourceNodeId: "root",
+          targetNodeId: "core-b",
+          relationKind: "derivation",
+          strength: 0.86
+        },
+        {
+          sourceNodeId: "root",
+          targetNodeId: "side",
+          relationKind: "association",
+          strength: 0.2
+        },
+        {
+          sourceNodeId: "core-a",
+          targetNodeId: "core-b",
+          relationKind: "support",
+          strength: 0.92
+        }
+      ],
+      activeNodeId: "root",
+      fragments: []
+    });
+    const root = graph.nodes.find((node) => node.id === "root")!;
+    const coreA = graph.nodes.find((node) => node.id === "core-a")!;
+    const coreB = graph.nodes.find((node) => node.id === "core-b")!;
+    const side = graph.nodes.find((node) => node.id === "side")!;
+
+    expect(centerDistance(coreA, coreB)).toBeLessThan(centerDistance(coreA, side));
+    expect(centerDistance(root, coreA)).toBeLessThan(centerDistance(root, side));
+    expect(centerDistance(root, coreB)).toBeLessThan(centerDistance(root, side));
   });
 
   it("keeps identical extension copy on a stable strong relation despite tag noise", () => {
@@ -724,6 +1155,35 @@ function centerDistance(
     a.position.x + getNodeWidth(a) / 2 - (b.position.x + getNodeWidth(b) / 2),
     a.position.y + getNodeHeight(a) / 2 - (b.position.y + getNodeHeight(b) / 2)
   );
+}
+
+function angleFrom(
+  root: ReturnType<typeof buildRightBrainGraph>["nodes"][number],
+  node: ReturnType<typeof buildRightBrainGraph>["nodes"][number]
+) {
+  return Math.atan2(
+    node.position.y + getNodeHeight(node) / 2 - (root.position.y + getNodeHeight(root) / 2),
+    node.position.x + getNodeWidth(node) / 2 - (root.position.x + getNodeWidth(root) / 2)
+  );
+}
+
+function getSmallestCoveringAngle(sortedAngles: number[]) {
+  if (sortedAngles.length <= 1) {
+    return 0;
+  }
+
+  const normalized = sortedAngles.map((angle) =>
+    angle < 0 ? angle + Math.PI * 2 : angle
+  ).sort((a, b) => a - b);
+  const gaps = normalized.map((angle, index) => {
+    const next = normalized[(index + 1) % normalized.length]!;
+    return index === normalized.length - 1
+      ? next + Math.PI * 2 - angle
+      : next - angle;
+  });
+  const largestGap = Math.max(...gaps);
+
+  return Math.PI * 2 - largestGap;
 }
 
 function getNodeWidth(

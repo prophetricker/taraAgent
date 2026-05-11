@@ -18,6 +18,20 @@ describe("formatIdeaNodeCopy", () => {
     expect(copy.summary.length).toBeGreaterThan(50);
   });
 
+  it("respects stored AI-authored node copy instead of renaming it by keyword rules", () => {
+    const copy = formatIdeaNodeCopy({
+      role: "extension",
+      title: "先宏观后微观",
+      content:
+        "先用宏观框架确认目标和边界，再进入微观步骤，避免一开始就陷入碎片细节。"
+    });
+
+    expect(copy.displayTitle).toBe("先宏观后微观");
+    expect(copy.summary).toBe(
+      "先用宏观框架确认目标和边界，再进入微观步骤，避免一开始就陷入碎片细节。"
+    );
+  });
+
   it("creates compact display copy without echoing the full original sentence", () => {
     const copy = formatIdeaNodeCopy({
       title: "我觉得右侧画板现在太乱了",

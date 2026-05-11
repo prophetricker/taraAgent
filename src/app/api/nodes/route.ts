@@ -1,7 +1,14 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { createNode, ensureDefaultNode, listNodes, updateNode } from "@/db/queries";
+import {
+  createNode,
+  ensureDefaultNode,
+  getDatabaseHealth,
+  listIdeaRelations,
+  listNodes,
+  updateNode
+} from "@/db/queries";
 import { requireUser } from "@/lib/auth";
 import { toFlowGraph } from "@/lib/graph";
 
@@ -26,10 +33,16 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  const databaseHealth = await getDatabaseHealth();
   await ensureDefaultNode(user.id);
   const nodes = await listNodes(user.id);
+  const relations = await listIdeaRelations(user.id);
 
-  return NextResponse.json(toFlowGraph(nodes));
+  return NextResponse.json({
+    ...toFlowGraph(nodes),
+    databaseHealth,
+    relations
+  });
 }
 
 export async function POST(request: Request) {
@@ -40,14 +53,20 @@ export async function POST(request: Request) {
   }
 
   const input = createNodeSchema.parse(await request.json());
-  const node = await createNode({
-    userId: user.id,
-    parentId: input.parentId,
-    title: input.title,
-    content: input.content,
-    positionX: input.positionX,
-    positionY: input.positionY
-  });
+  let node;
+
+  try {
+    node = await createNode({
+      userId: user.id,
+      parentId: input.parentId,
+      title: input.title,
+      content: input.content,
+      positionX: input.positionX,
+      positionY: input.positionY
+    });
+  } catch {
+    return NextResponse.json({ error: "Parent node not found" }, { status: 404 });
+  }
 
   return NextResponse.json(node, { status: 201 });
 }

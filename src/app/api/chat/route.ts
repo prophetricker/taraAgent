@@ -12,10 +12,13 @@ import {
   createFragment,
   createMessage,
   ensureConversation,
+  getConversationForUser,
+  getNodeForUser,
   listFragments,
   listMessages,
   listNodes,
   updateNode,
+  upsertIdeaRelation,
   upsertNodeByTitle
 } from "@/db/queries";
 import { requireUser } from "@/lib/auth";
@@ -25,14 +28,17 @@ import {
   shouldAttemptDandelionExtraction
 } from "@/lib/dandelion-extractor";
 import {
-  buildDandelionSummaryPrompt,
-  parseDandelionSummary
-} from "@/lib/dandelion-summarizer";
+  buildDandelionStructurePrompt,
+  parseDandelionStructure
+} from "@/lib/dandelion-structure";
 import { readServerEnv } from "@/lib/env";
 import { findDuplicateFragment } from "@/lib/fragments";
+import type { IdeaRelationKind } from "@/lib/graph";
 import { getTextFromParts } from "@/lib/messages";
 import { buildGuardianSystemPrompt, type GuardianMode } from "@/lib/prompt";
-import { deriveBranchTopic, deriveTopicFromConversation } from "@/lib/topic";
+import { deriveTopicFromConversation } from "@/lib/topic";
+import { getChatSideEffectPlan } from "@/lib/chat-side-effects";
+import { getUserSafeChatStreamError } from "@/lib/api-errors";
 
 const chatRequestSchema = z.object({
   messages: z.array(z.custom<UIMessage>()),
@@ -49,6 +55,15 @@ export async function POST(request: Request) {
   }
 
   const parsed = chatRequestSchema.parse(await request.json());
+  const activeNode = await getNodeForUser({
+    userId: user.id,
+    nodeId: parsed.nodeId
+  });
+
+  if (!activeNode) {
+    return NextResponse.json({ error: "Node not found" }, { status: 404 });
+  }
+
   const env = readServerEnv();
   const aiProvider = createOpenAICompatible({
     name: "ai-provider",
@@ -56,8 +71,20 @@ export async function POST(request: Request) {
     baseURL: env.ai.baseUrl
   });
   const conversation = parsed.conversationId
-    ? { id: parsed.conversationId }
+    ? await getConversationForUser({
+        userId: user.id,
+        conversationId: parsed.conversationId,
+        nodeId: parsed.nodeId
+      })
     : await ensureConversation({ userId: user.id, nodeId: parsed.nodeId });
+
+  if (!conversation) {
+    return NextResponse.json(
+      { error: "Conversation not found" },
+      { status: 404 }
+    );
+  }
+
   const latestUserMessage = [...parsed.messages]
     .reverse()
     .find((message) => message.role === "user");
@@ -71,29 +98,6 @@ export async function POST(request: Request) {
         role: "user",
         content
       });
-      const history = await listMessages({
-        userId: user.id,
-        conversationId: conversation.id
-      });
-      const userMessageCount = history.filter(
-        (message) => message.role === "user"
-      ).length;
-      if (userMessageCount > 1 && userMessageCount % 2 === 0) {
-        const recentUserMessages = history
-          .filter((message) => message.role === "user")
-          .slice(-2)
-          .map((message) => message.content);
-        const branch = deriveBranchTopic(recentUserMessages);
-
-        await upsertNodeByTitle({
-          userId: user.id,
-          parentId: parsed.nodeId,
-          title: branch.title,
-          content: branch.summary,
-          positionX: 340 + userMessageCount * 36,
-          positionY: 120 + (userMessageCount % 4) * 90
-        });
-      }
     }
   }
 
@@ -101,7 +105,11 @@ export async function POST(request: Request) {
     model: aiProvider.chatModel(env.ai.model),
     system: buildGuardianSystemPrompt(parsed.mode as GuardianMode),
     messages: await convertToModelMessages(parsed.messages),
+    timeout: 30000,
+    maxRetries: 1,
     onFinish: async ({ text }) => {
+      let assistantSaved = false;
+
       if (text) {
         await createMessage({
           userId: user.id,
@@ -109,57 +117,64 @@ export async function POST(request: Request) {
           role: "assistant",
           content: text
         });
+        assistantSaved = true;
       }
       if (latestUserMessage) {
         const content = getTextFromParts(latestUserMessage);
-        const activeNode = (await listNodes(user.id)).find(
-          (node) => node.id === parsed.nodeId
-        );
         const history = await listMessages({
           userId: user.id,
           conversationId: conversation.id
         });
-
-        await updateDandelionCenter({
-          model: aiProvider.chatModel(env.ai.model),
-          userId: user.id,
-          nodeId: parsed.nodeId,
-          previousTitle: activeNode?.title ?? "",
-          previousSummary: activeNode?.content ?? "",
-          latestUserMessage: content,
-          messages: history
+        const userMessageCount = history.filter(
+          (message) => message.role === "user"
+        ).length;
+        const sideEffectPlan = getChatSideEffectPlan({
+          userMessageCount,
+          userMessage: content,
+          providerFailed: !assistantSaved
         });
 
-        await maybeCreateDandelionFragment({
-          model: aiProvider.chatModel(env.ai.model),
-          userId: user.id,
-          nodeId: parsed.nodeId,
-          conversationId: conversation.id,
-          currentTopic: activeNode?.content ?? "",
-          userMessage: content
-        });
+        if (sideEffectPlan.updateDandelionCenter) {
+          await updateDandelionStructure({
+            model: aiProvider.chatModel(env.ai.model),
+            userId: user.id,
+            nodeId: parsed.nodeId,
+            previousTitle: activeNode.title,
+            previousSummary: activeNode.content,
+            latestUserMessage: content,
+            userMessageCount,
+            messages: history
+          });
+        } else if (sideEffectPlan.attemptFragmentExtraction) {
+          await maybeCreateDandelionFragment({
+            model: aiProvider.chatModel(env.ai.model),
+            userId: user.id,
+            nodeId: parsed.nodeId,
+            conversationId: conversation.id,
+            currentTopic: activeNode.content,
+            userMessage: content
+          });
+        }
       }
     }
   });
 
   return result.toUIMessageStreamResponse({
     onError(error) {
-      if (error instanceof Error) {
-        return error.message;
-      }
-
-      return "Agent stream failed.";
+      console.error("Chat stream failed", error);
+      return getUserSafeChatStreamError(error);
     }
   });
 }
 
-async function updateDandelionCenter(input: {
+async function updateDandelionStructure(input: {
   model: ReturnType<ReturnType<typeof createOpenAICompatible>["chatModel"]>;
   userId: string;
   nodeId: string;
   previousTitle: string;
   previousSummary: string;
   latestUserMessage: string;
+  userMessageCount: number;
   messages: Array<{
     role: "user" | "assistant" | "system" | "tool";
     content: string;
@@ -174,24 +189,38 @@ async function updateDandelionCenter(input: {
     const result = await generateText({
       model: input.model,
       system:
-        "你是一个灵感主干归纳器。你只输出 JSON。你要抓住整段对话的主干，而不是复述最新一句。",
-      prompt: buildDandelionSummaryPrompt({
+        "你是一个蒲公英图结构整理器。你只输出 JSON。中心要持续完善，延伸要可读、可合并、可校正。",
+      prompt: buildDandelionStructurePrompt({
         previousTitle: input.previousTitle,
         previousSummary: input.previousSummary,
         messages: input.messages
       }),
       temperature: 0.1
     });
-    const summary = parseDandelionSummary(result.text, {
+    const structure = parseDandelionStructure(result.text, {
       latestUserMessage: input.latestUserMessage
     });
+    const center = structure?.center ?? fallbackTopic;
 
     await updateNode({
       userId: input.userId,
       nodeId: input.nodeId,
-      title: summary?.title ?? fallbackTopic.title,
-      content: summary?.summary ?? fallbackTopic.summary
+      title: center.title,
+      content: center.summary
     });
+    if (structure?.extension) {
+      await createStructuredExtension({
+        userId: input.userId,
+        parentId: input.nodeId,
+        userMessageCount: input.userMessageCount,
+        title: structure.extension.title,
+        summary: structure.extension.summary,
+        relationKind: structure.extension.relationKind,
+        relatedToPreviousExtension: structure.extension.relatedToPreviousExtension,
+        centerStrength: structure.extension.centerStrength,
+        extensionStrength: structure.extension.extensionStrength
+      });
+    }
   } catch {
     await updateNode({
       userId: input.userId,
@@ -200,6 +229,71 @@ async function updateDandelionCenter(input: {
       content: fallbackTopic.summary
     });
   }
+}
+
+async function createStructuredExtension(input: {
+  userId: string;
+  parentId: string;
+  userMessageCount: number;
+  title: string;
+  summary: string;
+  relationKind: Exclude<IdeaRelationKind, "capture">;
+  relatedToPreviousExtension?: boolean;
+  centerStrength?: number;
+  extensionStrength?: number;
+}) {
+  const node = await upsertNodeByTitle({
+    userId: input.userId,
+    parentId: input.parentId,
+    title: input.title,
+    content: input.summary,
+    positionX: 340 + input.userMessageCount * 36,
+    positionY: 120 + (input.userMessageCount % 4) * 90
+  });
+
+  try {
+    await upsertIdeaRelation({
+      userId: input.userId,
+      sourceNodeId: input.parentId,
+      targetNodeId: node.id,
+      relationKind: input.relationKind
+    });
+
+    if (input.relatedToPreviousExtension) {
+      const previousExtension = await getPreviousExtensionForParent({
+        userId: input.userId,
+        parentId: input.parentId,
+        excludeNodeId: node.id
+      });
+
+      if (previousExtension) {
+        await upsertIdeaRelation({
+          userId: input.userId,
+          sourceNodeId: previousExtension.id,
+          targetNodeId: node.id,
+          relationKind: input.relationKind
+        });
+      }
+    }
+  } catch (error) {
+    console.error("Failed to save structured extension relation", error);
+  }
+
+  return node;
+}
+
+async function getPreviousExtensionForParent(input: {
+  userId: string;
+  parentId: string;
+  excludeNodeId: string;
+}) {
+  const nodes = await listNodes(input.userId);
+  const candidates = nodes.filter(
+    (node) =>
+      node.parentId === input.parentId && node.id !== input.excludeNodeId
+  );
+
+  return candidates.at(-1) ?? null;
 }
 
 async function maybeCreateDandelionFragment(input: {

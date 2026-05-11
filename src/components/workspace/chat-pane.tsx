@@ -8,7 +8,9 @@ import ReactMarkdown from "react-markdown";
 
 import type { DandelionFragmentRecord, MessageRecord } from "@/db/queries";
 import { getTextFromParts } from "@/lib/messages";
+import { getChatOnboardingPrompts } from "@/lib/onboarding";
 import type { GuardianMode } from "@/lib/prompt";
+import type { SaveStatus } from "@/lib/save-status";
 
 type Props = {
   activeNodeId: string;
@@ -16,6 +18,7 @@ type Props = {
   mode: GuardianMode;
   initialMessages: MessageRecord[];
   onFragmentCreated: (fragment: DandelionFragmentRecord) => void;
+  onSaveStatusChange: (status: SaveStatus) => void;
   onStreamFinished: () => Promise<void>;
 };
 
@@ -25,6 +28,7 @@ export function ChatPane({
   mode,
   initialMessages,
   onFragmentCreated,
+  onSaveStatusChange,
   onStreamFinished
 }: Props) {
   const [input, setInput] = useState("");
@@ -93,6 +97,7 @@ export function ChatPane({
 
     const content = selectionNote.trim() || selection.slice(0, 30);
     setIsCapturing(true);
+    onSaveStatusChange({ state: "saving", target: "碎片" });
 
     try {
       const response = await fetch("/api/fragments", {
@@ -110,6 +115,11 @@ export function ChatPane({
       });
 
       if (!response.ok) {
+        onSaveStatusChange({
+          state: "failed",
+          target: "碎片",
+          detail: "请检查登录状态或数据库连接"
+        });
         setCaptureError("保存失败，请检查登录状态或数据库连接。");
         return;
       }
@@ -121,6 +131,14 @@ export function ChatPane({
       setSelection("");
       setSelectionNote("");
       setCaptureError(null);
+      onSaveStatusChange({ state: "saved", target: "碎片" });
+    } catch {
+      onSaveStatusChange({
+        state: "failed",
+        target: "碎片",
+        detail: "网络异常，请稍后重试"
+      });
+      setCaptureError("保存失败，请稍后重试。");
     } finally {
       setIsCapturing(false);
     }
@@ -133,7 +151,7 @@ export function ChatPane({
         className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-5"
       >
         {messages.length === 0 ? (
-          <EmptyState />
+          <EmptyState onPromptPick={setInput} />
         ) : (
           messages.map((message) => (
             <MessageBubble key={message.id} message={message} />
@@ -232,7 +250,9 @@ function isVisibleChatMessage(
   return message.role === "user" || message.role === "assistant";
 }
 
-function EmptyState() {
+function EmptyState({ onPromptPick }: { onPromptPick: (prompt: string) => void }) {
+  const prompts = getChatOnboardingPrompts();
+
   return (
     <div className="rounded-[1.75rem] border border-dashed border-[#667a4d]/35 bg-white/45 p-6">
       <p className="text-sm tracking-[0.25em] text-[#667a4d]">SEED NOTE</p>
@@ -242,6 +262,18 @@ function EmptyState() {
       <p className="mt-3 leading-7 text-stone-700">
         把脑子里松散、矛盾、还不能定义的东西倒出来。右侧会沉淀当前蒲公英、延伸和游离碎片。
       </p>
+      <div className="mt-5 grid gap-2">
+        {prompts.map((prompt) => (
+          <button
+            key={prompt}
+            type="button"
+            onClick={() => onPromptPick(prompt)}
+            className="rounded-2xl border border-[#667a4d]/15 bg-[#fff8e8]/70 px-4 py-3 text-left text-sm leading-6 text-[#4f5f2d] transition hover:border-[#667a4d]/35 hover:bg-[#fff8e8]"
+          >
+            {prompt}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
